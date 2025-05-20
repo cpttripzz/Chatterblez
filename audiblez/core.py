@@ -4,6 +4,7 @@
 # Kokoro-82M model for high-quality text-to-speech synthesis.
 # by Claudio Santini 2025 - https://claudio.uk
 import os
+import sys
 import traceback
 from glob import glob
 
@@ -34,6 +35,24 @@ def load_spacy():
     if not spacy.util.is_package("xx_ent_wiki_sm"):
         print("Downloading Spacy model xx_ent_wiki_sm...")
         spacy.cli.download("xx_ent_wiki_sm")
+import ctypes
+import time
+import threading
+
+# Constants from WinBase.h
+ES_CONTINUOUS       = 0x80000000
+ES_SYSTEM_REQUIRED  = 0x00000001
+ES_DISPLAY_REQUIRED = 0x00000002
+
+# Set execution state to prevent sleep
+def prevent_sleep():
+    ctypes.windll.kernel32.SetThreadExecutionState(
+        ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED
+    )
+
+# Reset execution state to allow sleep
+def allow_sleep():
+    ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS)
 
 
 def set_espeak_library():
@@ -72,6 +91,12 @@ def set_espeak_library():
 def main(file_path, voice, pick_manually, speed, output_folder='.',
          max_chapters=None, max_sentences=None, selected_chapters=None, post_event=None):
     if post_event: post_event('CORE_STARTED')
+    IS_WINDOWS = sys.platform.startswith("win")
+
+    # Constants from WinBase.h
+    if IS_WINDOWS:
+        prevent_sleep()
+
     load_spacy()
     if output_folder != '.':
         Path(output_folder).mkdir(parents=True, exist_ok=True)
@@ -119,7 +144,10 @@ def main(file_path, voice, pick_manually, speed, output_folder='.',
     chapter_wav_files = []
     for i, chapter in enumerate(selected_chapters, start=1):
         if max_chapters and i > max_chapters: break
-        text = chapter.extracted_text
+        text = "\n".join(
+            line for line in chapter.extracted_text.splitlines()
+            if re.search(r'[\w.,;:\'\"!?()\[\]]', line)
+        )
         xhtml_file_name = chapter.get_name().replace(' ', '_').replace('/', '_').replace('\\', '_')
         chapter_wav_path = Path(output_folder) / filename.replace(extension, f'_chapter_{i}_{voice}_{xhtml_file_name}.wav')
         chapter_wav_files.append(chapter_wav_path)
@@ -157,6 +185,8 @@ def main(file_path, voice, pick_manually, speed, output_folder='.',
         create_index_file(title, creator, chapter_wav_files, output_folder)
         create_m4b(chapter_wav_files, filename, cover_image, output_folder)
         if post_event: post_event('CORE_FINISHED')
+    if IS_WINDOWS:
+        allow_sleep()
 
 
 def find_cover(book):
@@ -353,7 +383,7 @@ def probe_duration(file_name):
 
 
 def create_index_file(title, creator, chapter_mp3_files, output_folder):
-    with open(Path(output_folder) / "chapters.txt", "w", encoding="utf-8") as f:
+    with open(Path(output_folder) / "chapters.txt", "w",  encoding="ascii", newline="\n") as f:
         f.write(f";FFMETADATA1\ntitle={title}\nartist={creator}\n\n")
         start = 0
         i = 0
