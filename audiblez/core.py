@@ -328,7 +328,7 @@ def concat_wavs_with_ffmpeg(chapter_files, output_folder, filename):
         for wav_file in chapter_files:
             f.write(f"file '{wav_file}'\n")
     concat_file_path = Path(output_folder) / filename.replace('.epub', '.tmp.mp4')
-    subprocess.run(['ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i', wav_list_txt, '-c', 'copy', concat_file_path])
+    subprocess.run(['ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i', wav_list_txt, '-c:a', 'aac', '-b:a', '64k', concat_file_path])
     Path(wav_list_txt).unlink()
     return concat_file_path
 
@@ -339,36 +339,71 @@ def create_m4b(chapter_files, filename, cover_image, output_folder):
     chapters_txt_path = Path(output_folder) / "chapters.txt"
     print('Creating M4B file...')
 
+    final_filename = Path(output_folder) / filename.replace('.epub', '.m4b')
+    chapters_txt_path = Path(output_folder) / "chapters.txt"
+    print('Creating M4B file...')
+
+    ffmpeg_command = [
+        'ffmpeg',
+        '-y',  # Overwrite output
+
+        '-i', f'{concat_file_path}',  # Input audio
+        '-i', f'{chapters_txt_path}',  # Input chapters
+    ]
+
     if cover_image:
         cover_file_path = Path(output_folder) / 'cover'
         with open(cover_file_path, 'wb') as f:
             f.write(cover_image)
-        cover_image_args = [
-            '-i', f'{cover_file_path}',
-            '-map', '2:v',  # Map cover image
-            '-disposition:v', 'attached_pic',  # Ensure cover is embedded
-            '-c:v', 'copy',  # Keep cover unchanged
-        ]
+        ffmpeg_command.extend([
+            '-i', f'{cover_file_path}', # Input for the cover image (will be input #2)
+        ])
+        # Map the video stream (picture) from input #2
+        map_video_index = '2:v'
+        # Map metadata and chapters from input #2 (chapters.txt)
+        map_metadata_index = '2'
+        map_chapters_index = '2'
     else:
-        cover_image_args = []
+        # Map metadata and chapters from input #1 (chapters.txt)
+        map_video_index = None # No video stream to map
+        map_metadata_index = '1'
+        map_chapters_index = '1'
 
-    proc = subprocess.run([
-        'ffmpeg',
-        '-y',  # Overwrite output
-        
-        '-i', f'{concat_file_path}',  # Input audio
-        '-i', f'{chapters_txt_path}',  # Input chapters
-        *cover_image_args,  # Cover image (if provided)
 
+    ffmpeg_command.extend([
         '-map', '0:a',  # Map audio
         '-c:a', 'aac',  # Convert to AAC
         '-b:a', '64k',  # Reduce bitrate for smaller size
+    ])
 
-        '-map_metadata', '1', # Map metadata
+    if map_video_index:
+         ffmpeg_command.extend([
+            '-map', map_video_index,
+            '-metadata:s:v', 'title="Album cover"',
+            '-metadata:s:v', 'comment="Cover (front)"',
+            '-disposition:v:0', 'attached_pic', # Mark it as attached picture
+            '-c:v', 'copy' # Keep cover unchanged
+         ])
+
+    ffmpeg_command.extend([
+        '-map_metadata', map_metadata_index, # Map metadata
+        '-map_chapters', map_chapters_index, # Map chapters
 
         '-f', 'mp4',  # Output as M4B
         f'{final_filename}'  # Output file
     ])
+
+    print(f"Running FFmpeg command:\n{' '.join(ffmpeg_command)}\n")
+    proc = subprocess.run(
+        ffmpeg_command,
+        check=True,  # Raise an exception if the command returns a non-zero exit code
+        text=True,   # Capture stdout/stderr as text (Python 3.7+)
+        capture_output=True # Capture output for debugging
+    )
+
+    # --- Print FFmpeg output (for debugging/confirmation) ---
+    print("FFmpeg stdout:\n", proc.stdout)
+    print("FFmpeg stderr:\n", proc.stderr)
 
     Path(concat_file_path).unlink()
     if proc.returncode == 0:
