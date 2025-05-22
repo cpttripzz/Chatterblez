@@ -346,23 +346,32 @@ def strfdelta(tdelta, fmt='{D:02}d {H:02}h {M:02}m {S:02}s'):
 
 
 def concat_wavs_with_ffmpeg(chapter_files, output_folder, filename):
-    wav_list_txt = Path(output_folder) / filename.replace('.epub', '_wav_list.txt')
+    # Derive a base name for temporary files, independent of the original extension
+    base_filename_stem = Path(filename).stem
+
+    wav_list_txt = Path(output_folder) / f"{base_filename_stem}_wav_list.txt"
     with open(wav_list_txt, 'w') as f:
         for wav_file in chapter_files:
             f.write(f"file '{wav_file}'\n")
-    concat_file_path = Path(output_folder) / filename.replace('.epub', '.tmp.mp4')
+
+    # Create the temporary output file with a .tmp.mp4 extension
+    # We use .mp4 because it can contain AAC audio, which is generally what you want for .m4b
+    concat_file_path = Path(output_folder) / f"{base_filename_stem}.tmp.mp4"
+
     subprocess.run(['ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i', wav_list_txt, '-c:a', 'aac', '-b:a', '64k', concat_file_path])
+
+    # Clean up the temporary list file
     Path(wav_list_txt).unlink()
+
     return concat_file_path
 
 
 def create_m4b(chapter_files, filename, cover_image, output_folder):
     concat_file_path = concat_wavs_with_ffmpeg(chapter_files, output_folder, filename)
-    final_filename = Path(output_folder) / filename.replace('.epub', '.m4b')
-    chapters_txt_path = Path(output_folder) / "chapters.txt"
+
     print('Creating M4B file...')
 
-    final_filename = Path(output_folder) / filename.replace('.epub', '.m4b')
+    final_filename = Path(output_folder) / Path(filename).with_suffix('.m4b').name
     chapters_txt_path = Path(output_folder) / "chapters.txt"
     print('Creating M4B file...')
 
