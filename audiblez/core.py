@@ -89,7 +89,7 @@ def set_espeak_library():
 
 
 def main(file_path, voice, pick_manually, speed, output_folder='.',
-         max_chapters=None, max_sentences=None, selected_chapters=None, post_event=None):
+         max_chapters=None, max_sentences=None, selected_chapters=None, post_event=None, regex=None):
     if post_event: post_event('CORE_STARTED')
     IS_WINDOWS = sys.platform.startswith("win")
 
@@ -102,26 +102,36 @@ def main(file_path, voice, pick_manually, speed, output_folder='.',
         Path(output_folder).mkdir(parents=True, exist_ok=True)
 
     filename = Path(file_path).name
+    extension = os.path.splitext(file_path)[1].lower()
 
-    extension = '.epub'
-    book = epub.read_epub(file_path)
-    meta_title = book.get_metadata('DC', 'title')
-    title = meta_title[0][0] if meta_title else ''
-    meta_creator = book.get_metadata('DC', 'creator')
-    creator = meta_creator[0][0] if meta_creator else ''
+    # PDF support: if selected_chapters is provided, use them directly
+    if selected_chapters is not None:
+        # PDF or pre-extracted chapters from UI
+        title = os.path.splitext(os.path.basename(file_path))[0]
+        creator = "Unknown"
+        cover_image = b""
+        document_chapters = selected_chapters
+    else:
+        # EPUB workflow
+        extension = '.epub'
+        book = epub.read_epub(file_path)
+        meta_title = book.get_metadata('DC', 'title')
+        title = meta_title[0][0] if meta_title else ''
+        meta_creator = book.get_metadata('DC', 'creator')
+        creator = meta_creator[0][0] if meta_creator else ''
+        cover_maybe = find_cover(book)
+        cover_image = cover_maybe.get_content() if cover_maybe else b""
+        if cover_maybe:
+            print(f'Found cover image {cover_maybe.file_name} in {cover_maybe.media_type} format')
+        document_chapters = find_document_chapters_and_extract_texts(book)
 
-    cover_maybe = find_cover(book)
-    cover_image = cover_maybe.get_content() if cover_maybe else b""
-    if cover_maybe:
-        print(f'Found cover image {cover_maybe.file_name} in {cover_maybe.media_type} format')
-
-    document_chapters = find_document_chapters_and_extract_texts(book)
-
-    if not selected_chapters:
-        if pick_manually is True:
-            selected_chapters = pick_chapters(document_chapters)
-        else:
-            selected_chapters = find_good_chapters(document_chapters)
+        if not selected_chapters:
+            if pick_manually is True:
+                selected_chapters = pick_chapters(document_chapters)
+            else:
+                selected_chapters = find_good_chapters(document_chapters)
+    if selected_chapters is None:
+        selected_chapters = document_chapters
     print_selected_chapters(document_chapters, selected_chapters)
     texts = [c.extracted_text for c in selected_chapters]
 
@@ -144,17 +154,28 @@ def main(file_path, voice, pick_manually, speed, output_folder='.',
     chapter_wav_files = []
     for i, chapter in enumerate(selected_chapters, start=1):
         if max_chapters and i > max_chapters: break
+        # Strip all characters that cannot be rendered in TTS engines
+        allowed_chars = r"[^a-zA-Z0-9\s.,;:'\"!?()\[\]-]"
+        lines = chapter.extracted_text.splitlines()
+        if regex:
+            try:
+                pattern = re.compile(regex)
+                lines = [line for line in lines if pattern.search(line)]
+            except Exception as e:
+                print(f"Invalid regex '{regex}': {e}")
         text = "\n".join(
-            line for line in chapter.extracted_text.splitlines()
-            if re.search(r'[\w.,;:\'\"!?()\[\]]', line)
+            re.sub(allowed_chars, '', line)
+            for line in lines
+            if re.search(r'\w', line)  # keep lines with at least one alphanumeric character
         )
+        print(f"text {text}");
         xhtml_file_name = chapter.get_name().replace(' ', '_').replace('/', '_').replace('\\', '_')
         chapter_wav_path = Path(output_folder) / filename.replace(extension, f'_chapter_{i}_{voice}_{xhtml_file_name}.wav')
         chapter_wav_files.append(chapter_wav_path)
         if Path(chapter_wav_path).exists():
             print(f'File for chapter {i} already exists. Skipping')
             stats.processed_chars += len(text)
-            if post_event:
+            if post_event and hasattr(chapter, "chapter_index"):
                 post_event('CORE_CHAPTER_FINISHED', chapter_index=chapter.chapter_index)
             continue
         if len(text.strip()) < 10:
@@ -165,7 +186,8 @@ def main(file_path, voice, pick_manually, speed, output_folder='.',
             # add intro text
             text = f'{title} – {creator}.\n\n' + text
         start_time = time.time()
-        if post_event: post_event('CORE_CHAPTER_STARTED', chapter_index=chapter.chapter_index)
+        if post_event and hasattr(chapter, "chapter_index"):
+            post_event('CORE_CHAPTER_STARTED', chapter_index=chapter.chapter_index)
         audio_segments = gen_audio_segments(
             pipeline, text, voice, speed, stats, post_event=post_event, max_sentences=max_sentences)
         if audio_segments:
@@ -175,7 +197,8 @@ def main(file_path, voice, pick_manually, speed, output_folder='.',
             delta_seconds = end_time - start_time
             chars_per_sec = len(text) / delta_seconds
             print('Chapter written to', chapter_wav_path)
-            if post_event: post_event('CORE_CHAPTER_FINISHED', chapter_index=chapter.chapter_index)
+            if post_event and hasattr(chapter, "chapter_index"):
+                post_event('CORE_CHAPTER_FINISHED', chapter_index=chapter.chapter_index)
             print(f'Chapter {i} read in {delta_seconds:.2f} seconds ({chars_per_sec:.0f} characters per second)')
         else:
             print(f'Warning: No audio generated for chapter {i}')

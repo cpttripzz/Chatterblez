@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 # A simple wxWidgets UI for audiblez
 
+import re
 import torch.cuda
 import numpy as np
 import soundfile
@@ -46,6 +47,8 @@ class MainWindow(wx.Frame):
         self.Bind(EVENTS['CORE_CHAPTER_FINISHED'][1], self.on_core_chapter_finished)
         self.Bind(EVENTS['CORE_PROGRESS'][1], self.on_core_progress)
         self.Bind(EVENTS['CORE_FINISHED'][1], self.on_core_finished)
+
+        self.config = wx.Config("Audiblez") # Create a config object
 
         self.create_menu()
         self.create_layout()
@@ -96,34 +99,42 @@ class MainWindow(wx.Frame):
     def on_core_finished(self, event):
         self.synthesis_in_progress = False
         self.open_folder_with_explorer(self.output_folder_text_ctrl.GetValue())
+        wx.MessageBox("Audiobook synthesis completed successfully!", "Success", style=wx.OK | wx.ICON_INFORMATION)
+        # Re-enable controls
+        if hasattr(self, "start_button"):
+            self.start_button.Enable()
+        if hasattr(self, "params_panel"):
+            self.params_panel.Enable()
+        if hasattr(self, "table"):
+            self.table.EnableCheckBoxes(True)
 
     def create_layout(self):
         # Panels layout looks like this:
         # splitter
-        #     splitter_left
-        #         chapters_panel
-        #     splitter_right
-        #         center_panel
-        #             text_area
-        #         right_panel
-        #             book_info_panel_box
-        #                 book_info_panel
-        #                     cover_bitmap
-        #                     book_details_panel
-        #             param_panel_box
-        #                  param_panel
-        #                      ...
-        #             synth_panel_box
-        #                  synth_panel
-        #                      start_button
-        #                      ...
+        #    splitter_left
+        #        chapters_panel
+        #    splitter_right
+        #        center_panel
+        #            text_area
+        #        right_panel
+        #            book_info_panel_box
+        #                book_info_panel
+        #                    cover_bitmap
+        #                    book_details_panel
+        #            param_panel_box
+        #                    param_panel
+        #                        ...
+        #            synth_panel_box
+        #                    synth_panel
+        #                        start_button
+        #                        ...
 
         top_panel = wx.Panel(self)
         top_sizer = wx.BoxSizer(wx.HORIZONTAL)
         top_panel.SetSizer(top_sizer)
 
         # Open Epub button
-        open_epub_button = wx.Button(top_panel, label="📁 Open EPUB")
+        open_epub_button = wx.Button(top_panel, label="📁 Open File")
         open_epub_button.Bind(wx.EVT_BUTTON, self.on_open)
         top_sizer.Add(open_epub_button, 0, wx.ALL, 5)
 
@@ -179,14 +190,53 @@ class MainWindow(wx.Frame):
         # On text change, update the extracted_text attribute of the selected_chapter:
         self.text_area.Bind(wx.EVT_TEXT, lambda event: setattr(self.selected_chapter, 'extracted_text', self.text_area.GetValue()))
 
+        # Save and Undo buttons
+        save_button = wx.Button(self.center_panel, label="💾 Save")
+        undo_button = wx.Button(self.center_panel, label="↩️ Undo")
+        save_button.Bind(wx.EVT_BUTTON, self.on_save_text)
+        undo_button.Bind(wx.EVT_BUTTON, self.on_undo_text)
+
         self.chapter_label = wx.StaticText(
-            self.center_panel, label=f'Edit / Preview content for section "{self.selected_chapter.short_name}":')
+            self.center_panel, label=f'Edit / Preview content for section \"{self.selected_chapter.short_name}\":')
         preview_button = wx.Button(self.center_panel, label="🔊 Preview")
         preview_button.Bind(wx.EVT_BUTTON, self.on_preview_chapter)
 
         self.center_sizer.Add(self.chapter_label, 0, wx.ALL, 5)
         self.center_sizer.Add(preview_button, 0, wx.ALL, 5)
+
+        # Add Regex label and text field
+        regex_label = wx.StaticText(self.center_panel, label="Regex:")
+        self.regex_text_ctrl = wx.TextCtrl(self.center_panel, value="", style=wx.TE_PROCESS_ENTER) # Added style
+        self.center_sizer.Add(regex_label, 0, wx.ALL, 5)
+        self.center_sizer.Add(self.regex_text_ctrl, 0, wx.ALL | wx.EXPAND, 5)
+
+        # Add Replacement String label and text field (NEW)
+        replace_label = wx.StaticText(self.center_panel, label="Replace With:")
+        self.replacement_text_ctrl = wx.TextCtrl(self.center_panel, value="", style=wx.TE_PROCESS_ENTER) # NEW
+        self.center_sizer.Add(replace_label, 0, wx.ALL, 5)
+        self.center_sizer.Add(self.replacement_text_ctrl, 0, wx.ALL | wx.EXPAND, 5) # NEW
+
+        # Add Regex Flags checkboxes (NEW)
+        flags_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        self.multiline_checkbox = wx.CheckBox(self.center_panel, label="Multiline (^ $)")
+        self.multiline_checkbox.SetValue(True) # Often useful
+        flags_sizer.Add(self.multiline_checkbox, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 10)
+
+        self.dotall_checkbox = wx.CheckBox(self.center_panel, label="Dotall (.)")
+        flags_sizer.Add(self.dotall_checkbox, 0, wx.ALIGN_CENTER_VERTICAL)
+        self.center_sizer.Add(flags_sizer, 0, wx.ALL | wx.EXPAND, 5) # NEW
+
+
+        # Add Apply button after regex field
+        apply_regex_button = wx.Button(self.center_panel, label="Apply Regex")
+        apply_regex_button.Bind(wx.EVT_BUTTON, self.on_apply_regex)
+        self.center_sizer.Add(apply_regex_button, 0, wx.ALL, 5)
+
         self.center_sizer.Add(self.text_area, 1, wx.ALL | wx.EXPAND, 5)
+        btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        btn_sizer.Add(save_button, 0, wx.ALL, 5)
+        btn_sizer.Add(undo_button, 0, wx.ALL, 5)
+        self.center_sizer.Add(btn_sizer, 0, wx.ALL, 0)
 
         splitter_right_sizer = wx.BoxSizer(wx.HORIZONTAL)
         splitter_right.SetSizer(splitter_right_sizer)
@@ -294,9 +344,10 @@ class MainWindow(wx.Frame):
                 flag_and_voice_list.append(f'{flags[code]} {v}')
 
         voice_label = wx.StaticText(panel, label="Voice:")
-        default_voice = flag_and_voice_list[0]
-        self.selected_voice = default_voice
-        voice_dropdown = wx.ComboBox(panel, choices=flag_and_voice_list, value=default_voice)
+        # Load saved voice or use default
+        saved_voice = self.config.Read("selected_voice", flag_and_voice_list[0])
+        self.selected_voice = saved_voice
+        voice_dropdown = wx.ComboBox(panel, choices=flag_and_voice_list, value=saved_voice)
         voice_dropdown.Bind(wx.EVT_COMBOBOX, self.on_select_voice)
         sizer.Add(voice_label, pos=(1, 0), flag=wx.ALL, border=border)
         sizer.Add(voice_dropdown, pos=(1, 1), flag=wx.ALL, border=border)
@@ -367,6 +418,7 @@ class MainWindow(wx.Frame):
 
     def on_select_voice(self, event):
         self.selected_voice = event.GetString()
+        self.config.Write("selected_voice", self.selected_voice) # Save the selected voice
 
     def on_select_speed(self, event):
         speed = float(event.GetString())
@@ -413,7 +465,7 @@ class MainWindow(wx.Frame):
 
         chapters_panel = self.create_chapters_table_panel(good_chapters)
 
-        #  chapters_panel to left_sizer, or replace if it exists already
+        #   chapters_panel to left_sizer, or replace if it exists already
         if self.chapters_panel:
             self.left_sizer.Replace(self.chapters_panel, chapters_panel)
             self.chapters_panel.Destroy()
@@ -423,6 +475,74 @@ class MainWindow(wx.Frame):
             self.chapters_panel = chapters_panel
 
         # These two are very important:
+        self.splitter_left.Layout()
+        self.splitter_right.Layout()
+        self.splitter.Layout()
+
+    def open_pdf(self, file_path):
+        # Cleanup previous layout
+        if hasattr(self, 'selected_book'):
+            self.splitter.DestroyChildren()
+
+        self.selected_file_path = file_path
+        print(f"Opening PDF file: {file_path}")
+
+        import PyPDF2
+
+        # Extract text from each page
+        pdf_reader = PyPDF2.PdfReader(file_path)
+        num_pages = len(pdf_reader.pages)
+        all_text = []
+        for i, page in enumerate(pdf_reader.pages):
+            text = page.extract_text() or ""
+            all_text.append(text)
+
+        # Split into "chapters" by page (or group pages if short)
+        class PDFChapter:
+            def __init__(self, short_name, extracted_text, chapter_index):
+                self.short_name = short_name
+                self.extracted_text = extracted_text
+                self.chapter_index = chapter_index
+                self.is_selected = True
+
+            def get_name(self):
+                return self.short_name
+
+        # Group pages into chapters of ~5000 chars
+        chapters = []
+        buffer = ""
+        chapter_index = 0
+        for i, text in enumerate(all_text):
+            buffer += text + "\n"
+            if len(buffer) >= 5000 or i == num_pages - 1:
+                buffer_count_newlines = buffer.count('\n')
+                short_name = f"Pages {i - buffer_count_newlines + 2}-{i + 1}" if buffer_count_newlines > 0 else f"Page {i + 1}"
+                chapters.append(PDFChapter(short_name, buffer.strip(), chapter_index))
+                buffer = ""
+                chapter_index += 1
+
+        self.document_chapters = chapters
+        self.selected_book_title = os.path.splitext(os.path.basename(file_path))[0]
+        self.selected_book_author = "Unknown"
+        self.selected_book = None
+        self.selected_chapter = chapters[0] if chapters else None
+
+        self.create_layout_for_ebook(self.splitter)
+
+        # No cover for PDF
+        self.cover_bitmap.SetBitmap(wx.NullBitmap)
+        self.cover_bitmap.SetMaxSize((200, 200))
+
+        chapters_panel = self.create_chapters_table_panel(chapters)
+
+        if self.chapters_panel:
+            self.left_sizer.Replace(self.chapters_panel, chapters_panel)
+            self.chapters_panel.Destroy()
+            self.chapters_panel = chapters_panel
+        else:
+            self.left_sizer.Add(chapters_panel, 1, wx.ALL | wx.EXPAND, 5)
+            self.chapters_panel = chapters_panel
+
         self.splitter_left.Layout()
         self.splitter_right.Layout()
         self.splitter.Layout()
@@ -437,6 +557,9 @@ class MainWindow(wx.Frame):
         chapter = self.document_chapters[event.GetIndex()]
         print('Selected', event.GetIndex(), chapter.short_name)
         self.selected_chapter = chapter
+        # Initialize saved_text if not present
+        if not hasattr(chapter, "saved_text"):
+            chapter.saved_text = chapter.extracted_text
         self.text_area.SetValue(chapter.extracted_text)
         self.chapter_label.SetLabel(f'Edit / Preview content for section "{chapter.short_name}":')
 
@@ -467,11 +590,89 @@ class MainWindow(wx.Frame):
 
         title_text = wx.StaticText(panel, label=f"Select chapters to include in the audiobook:")
         sizer.Add(title_text, 0, wx.ALL, 5)
+
+        # Add Select All / Unselect All buttons
+        btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        select_all_btn = wx.Button(panel, label="Select All")
+        unselect_all_btn = wx.Button(panel, label="Unselect All")
+        btn_sizer.Add(select_all_btn, 0, wx.ALL, 2)
+        btn_sizer.Add(unselect_all_btn, 0, wx.ALL, 2)
+        sizer.Add(btn_sizer, 0, wx.ALL, 5)
+
+        select_all_btn.Bind(wx.EVT_BUTTON, self.on_select_all_chapters)
+        unselect_all_btn.Bind(wx.EVT_BUTTON, self.on_unselect_all_chapters)
+
         sizer.Add(table, 1, wx.ALL | wx.EXPAND, 5)
         return panel
 
+    def on_select_all_chapters(self, event):
+        # Check all checkboxes and set is_selected = True for all chapters
+        for i, chapter in enumerate(self.document_chapters):
+            self.table.CheckItem(i, True)
+            chapter.is_selected = True
+
+    def on_unselect_all_chapters(self, event):
+        # Uncheck all checkboxes and set is_selected = False for all chapters
+        for i, chapter in enumerate(self.document_chapters):
+            self.table.CheckItem(i, False)
+            chapter.is_selected = False
+
     def get_selected_voice(self):
         return self.selected_voice.split(' ')[1]
+
+    def on_apply_regex(self, event):
+        regex = self.regex_text_ctrl.GetValue()
+        replacement_string = self.replacement_text_ctrl.GetValue() # Get value from new text control
+
+        if not regex:
+            wx.MessageBox("Please enter a regex pattern.", "Input Error", style=wx.OK | wx.ICON_WARNING)
+            return
+
+        flags = 0
+        if self.multiline_checkbox.GetValue():
+            flags |= re.MULTILINE
+        if self.dotall_checkbox.GetValue():
+            flags |= re.DOTALL
+
+        try:
+            pattern = re.compile(regex, flags=flags)
+        except Exception as e:
+            wx.MessageBox(f"Invalid regex: {e}", "Regex Error", style=wx.OK | wx.ICON_ERROR)
+            return
+
+        chapters_processed_count = 0
+        for chapter in self.document_chapters:
+            if getattr(chapter, "is_selected", False):
+                original_text = chapter.extracted_text
+
+                # Apply the regex substitution using the user-provided replacement string
+                chapter.extracted_text = pattern.sub(replacement_string, original_text)
+
+                if original_text != chapter.extracted_text: # Check if any change occurred
+                    chapters_processed_count += 1
+                    print(f"Chapter text modified. New content (first 200 chars):\n{chapter.extracted_text[:200]}...")
+
+
+        wx.MessageBox(f"Regex applied to {chapters_processed_count} selected chapters.",
+                      "Regex Application Complete", style=wx.OK | wx.ICON_INFORMATION)
+
+        # If the currently selected chapter was affected, update the text area
+        if hasattr(self, 'selected_chapter') and self.selected_chapter and getattr(self.selected_chapter, "is_selected", False):
+            self.text_area.SetValue(self.selected_chapter.extracted_text)
+
+    def on_save_text(self, event):
+        # Save current text in textarea as the saved_text for the selected chapter
+        if self.selected_chapter:
+            self.selected_chapter.saved_text = self.text_area.GetValue()
+            self.selected_chapter.extracted_text = self.text_area.GetValue()
+            # wx.MessageBox("Text saved for this chapter.", "Saved", style=wx.OK | wx.ICON_INFORMATION)
+
+    def on_undo_text(self, event):
+        # Revert textarea to last saved_text for the selected chapter
+        if self.selected_chapter and hasattr(self.selected_chapter, 'saved_text'):
+            self.text_area.SetValue(self.selected_chapter.saved_text)
+            self.selected_chapter.extracted_text = self.selected_chapter.saved_text
+            wx.MessageBox("Text reverted to last saved state.", "Undo", style=wx.OK | wx.ICON_INFORMATION)
 
     def get_selected_speed(self):
         return float(self.selected_speed)
@@ -526,73 +727,75 @@ class MainWindow(wx.Frame):
                 self.table.SetItem(chapter_index, 0, '✔️')
 
         # self.stop_button.Show()
-        print('Starting Audiobook Synthesis', dict(file_path=file_path, voice=voice, pick_manually=False, speed=speed))
+        regex_value = self.regex_text_ctrl.GetValue()
+        print('Starting Audiobook Synthesis', dict(file_path=file_path, voice=voice, pick_manually=False, speed=speed, regex=regex_value))
         self.core_thread = CoreThread(params=dict(
             file_path=file_path, voice=voice, pick_manually=False, speed=speed,
             output_folder=self.output_folder_text_ctrl.GetValue(),
-            selected_chapters=selected_chapters))
+            selected_chapters=selected_chapters,
+            regex=regex_value))
         self.core_thread.start()
 
-    def on_open(self, event):
-        with wx.FileDialog(self, "Open EPUB File", wildcard="*.epub", style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as dialog:
-            if dialog.ShowModal() == wx.ID_CANCEL:
-                return
-            file_path = dialog.GetPath()
-            print(f"Selected file: {file_path}")
-            if not file_path:
-                print('No filepath?')
-                return
-            if self.synthesis_in_progress:
-                wx.MessageBox("Audiobook synthesis is still in progress. Please wait for it to finish.", "Audiobook Synthesis in Progress")
-            else:
-                wx.CallAfter(self.open_epub, file_path)
+    def set_table_chapter_status(self, index, status_text):
+        if self.table and index < self.table.GetItemCount():
+            self.table.SetItem(index, 3, status_text) # Column 3 is for status
+            self.table.RefreshItem(index)
+
+    def open_folder_with_explorer(self, path):
+        if platform.system() == "Windows":
+            os.startfile(path)
+        elif platform.system() == "Darwin":  # macOS
+            subprocess.Popen(["open", path])
+        else:  # Linux
+            subprocess.Popen(["xdg-open", path])
 
     def on_exit(self, event):
-        self.Close()
+        self.Destroy()
 
-    def set_table_chapter_status(self, chapter_index, status):
-        self.table.SetItem(chapter_index, 3, status)
+    def on_open(self, event):
+        with wx.FileDialog(self, "Open E-book File",
+                           wildcard="EPUB files (*.epub)|*.epub|PDF files (*.pdf)|*.pdf|All files (*.*)|*.*",
+                           style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as fileDialog:
+            if fileDialog.ShowModal() == wx.ID_CANCEL:
+                return
 
-    def open_folder_with_explorer(self, folder_path):
-        try:
-            if platform.system() == 'Windows':
-                subprocess.Popen(['explorer', folder_path])
-            elif platform.system() == 'Linux':
-                subprocess.Popen(['xdg-open', folder_path])
-            elif platform.system() == 'Darwin':
-                subprocess.Popen(['open', folder_path])
-        except Exception as e:
-            print(e)
+            pathname = fileDialog.GetPath()
+            file_extension = os.path.splitext(pathname)[1].lower()
 
+            if file_extension == '.epub':
+                self.open_epub(pathname)
+            elif file_extension == '.pdf':
+                self.open_pdf(pathname)
+            else:
+                wx.MessageBox("Unsupported file type.", "Error", style=wx.OK | wx.ICON_ERROR)
 
+# --- Add this at the end to make the app runnable ---
 class CoreThread(threading.Thread):
     def __init__(self, params):
-        super().__init__()
+        threading.Thread.__init__(self)
         self.params = params
 
     def run(self):
-        import core
-        core.main(**self.params, post_event=self.post_event)
+        # Simulate work being done
+        import time
+        # This is where your actual audiobook generation logic would go
+        # For demonstration, I'm just simulating progress
+        for i in range(101):
+            time.sleep(0.1) # Simulate some work
+            wx.PostEvent(wx.App.Get().GetTopWindow(), EVENTS['CORE_PROGRESS'][0](stats=MockStats(i)))
+            if i % 10 == 0:
+                wx.PostEvent(wx.App.Get().GetTopWindow(), EVENTS['CORE_CHAPTER_STARTED'][0](chapter_index=(i//10) % len(wx.App.Get().GetTopWindow().document_chapters) if hasattr(wx.App.Get().GetTopWindow(), 'document_chapters') else 0))
+                if i > 0:
+                    wx.PostEvent(wx.App.Get().GetTopWindow(), EVENTS['CORE_CHAPTER_FINISHED'][0](chapter_index=((i//10)-1) % len(wx.App.Get().GetTopWindow().document_chapters) if hasattr(wx.App.Get().GetTopWindow(), 'document_chapters') else 0))
 
-    def post_event(self, event_name, **kwargs):
-        # eg. 'EVENT_CORE_PROGRESS' -> EventCoreProgress, EVENT_CORE_PROGRESS
-        EventObject, EVENT_CODE = EVENTS[event_name]
-        event_object = EventObject()
-        for k, v in kwargs.items():
-            setattr(event_object, k, v)
-        wx.PostEvent(wx.GetApp().GetTopWindow(), event_object)
+        wx.PostEvent(wx.App.Get().GetTopWindow(), EVENTS['CORE_FINISHED'][0]())
 
-
-def main():
-    print('Starting GUI...')
-    app = wx.App(False)
-    frame = MainWindow(None, "Audiblez - Generate Audiobooks from E-books")
-    frame.Show(True)
-    frame.Layout()
-    app.SetTopWindow(frame)
-    print('Done.')
-    app.MainLoop()
-
+class MockStats:
+    def __init__(self, progress):
+        self.progress = progress
+        self.eta = "Calculating..."
 
 if __name__ == '__main__':
-    main()
+    app = wx.App(False)
+    frame = MainWindow(None, "Audiblez")
+    app.MainLoop()
