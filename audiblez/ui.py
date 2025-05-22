@@ -776,26 +776,28 @@ class CoreThread(threading.Thread):
         self.params = params
 
     def run(self):
-        # Simulate work being done
-        import time
-        # This is where your actual audiobook generation logic would go
-        # For demonstration, I'm just simulating progress
-        for i in range(101):
-            time.sleep(0.1) # Simulate some work
-            wx.PostEvent(wx.App.Get().GetTopWindow(), EVENTS['CORE_PROGRESS'][0](stats=MockStats(i)))
-            if i % 10 == 0:
-                wx.PostEvent(wx.App.Get().GetTopWindow(), EVENTS['CORE_CHAPTER_STARTED'][0](chapter_index=(i//10) % len(wx.App.Get().GetTopWindow().document_chapters) if hasattr(wx.App.Get().GetTopWindow(), 'document_chapters') else 0))
-                if i > 0:
-                    wx.PostEvent(wx.App.Get().GetTopWindow(), EVENTS['CORE_CHAPTER_FINISHED'][0](chapter_index=((i//10)-1) % len(wx.App.Get().GetTopWindow().document_chapters) if hasattr(wx.App.Get().GetTopWindow(), 'document_chapters') else 0))
+        import core
+        core.main(**self.params, post_event=self.post_event)
 
-        wx.PostEvent(wx.App.Get().GetTopWindow(), EVENTS['CORE_FINISHED'][0]())
+    def post_event(self, event_name, **kwargs):
+        # eg. 'EVENT_CORE_PROGRESS' -> EventCoreProgress, EVENT_CORE_PROGRESS
+        EventObject, EVENT_CODE = EVENTS[event_name]
+        event_object = EventObject()
+        for k, v in kwargs.items():
+            setattr(event_object, k, v)
+        wx.PostEvent(wx.GetApp().GetTopWindow(), event_object)
 
-class MockStats:
-    def __init__(self, progress):
-        self.progress = progress
-        self.eta = "Calculating..."
+
+def main():
+    print('Starting GUI...')
+    app = wx.App(False)
+    frame = MainWindow(None, "Audiblez - Generate Audiobooks from E-books")
+    frame.Show(True)
+    frame.Layout()
+    app.SetTopWindow(frame)
+    print('Done.')
+    app.MainLoop()
+
 
 if __name__ == '__main__':
-    app = wx.App(False)
-    frame = MainWindow(None, "Audiblez")
-    app.MainLoop()
+    main()

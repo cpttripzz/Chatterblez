@@ -103,9 +103,9 @@ def main(file_path, voice, pick_manually, speed, output_folder='.',
 
     filename = Path(file_path).name
     extension = os.path.splitext(file_path)[1].lower()
-
+    print(f"extension {extension}");
     # PDF support: if selected_chapters is provided, use them directly
-    if selected_chapters is not None:
+    if extension == '.pdf':
         # PDF or pre-extracted chapters from UI
         title = os.path.splitext(os.path.basename(file_path))[0]
         creator = "Unknown"
