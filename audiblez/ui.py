@@ -19,6 +19,7 @@ from tempfile import NamedTemporaryFile
 from pathlib import Path
 
 from audiblez.voices import voices, flags
+import audiblez.core as core # Import core to access probe_duration etc.
 
 EVENTS = {
     'CORE_STARTED': NewEvent(),
