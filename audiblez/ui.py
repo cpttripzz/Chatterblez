@@ -99,6 +99,15 @@ class MainWindow(wx.Frame):
     def on_core_finished(self, event):
         self.synthesis_in_progress = False
         self.open_folder_with_explorer(self.output_folder_text_ctrl.GetValue())
+        # Delete all .wav files in the output folder on success
+        output_folder = self.output_folder_text_ctrl.GetValue()
+        import glob
+        wav_files = glob.glob(os.path.join(output_folder, "*.wav"))
+        for wav_file in wav_files:
+            try:
+                os.remove(wav_file)
+            except Exception as e:
+                print(f"Failed to delete {wav_file}: {e}")
         wx.MessageBox("Audiobook synthesis completed successfully!", "Success", style=wx.OK | wx.ICON_INFORMATION)
         # Re-enable controls
         if hasattr(self, "start_button"):
@@ -728,12 +737,12 @@ class MainWindow(wx.Frame):
 
         # self.stop_button.Show()
         regex_value = self.regex_text_ctrl.GetValue()
-        print('Starting Audiobook Synthesis', dict(file_path=file_path, voice=voice, pick_manually=False, speed=speed, regex=regex_value))
+        print('Starting Audiobook Synthesis', dict(file_path=file_path, voice=voice, pick_manually=False, speed=speed))
         self.core_thread = CoreThread(params=dict(
             file_path=file_path, voice=voice, pick_manually=False, speed=speed,
             output_folder=self.output_folder_text_ctrl.GetValue(),
             selected_chapters=selected_chapters,
-            regex=regex_value))
+            ))
         self.core_thread.start()
 
     def set_table_chapter_status(self, index, status_text):

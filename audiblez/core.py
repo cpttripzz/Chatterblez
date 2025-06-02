@@ -89,7 +89,7 @@ def set_espeak_library():
 
 
 def main(file_path, voice, pick_manually, speed, output_folder='.',
-         max_chapters=None, max_sentences=None, selected_chapters=None, post_event=None, regex=None):
+         max_chapters=None, max_sentences=None, selected_chapters=None, post_event=None):
     if post_event: post_event('CORE_STARTED')
     IS_WINDOWS = sys.platform.startswith("win")
 
@@ -157,12 +157,6 @@ def main(file_path, voice, pick_manually, speed, output_folder='.',
         # Strip all characters that cannot be rendered in TTS engines
         allowed_chars = r"[^a-zA-Z0-9\s.,;:'\"!?()\[\]-]"
         lines = chapter.extracted_text.splitlines()
-        if regex:
-            try:
-                pattern = re.compile(regex)
-                lines = [line for line in lines if pattern.search(line)]
-            except Exception as e:
-                print(f"Invalid regex '{regex}': {e}")
         text = "\n".join(
             re.sub(allowed_chars, '', line)
             for line in lines
