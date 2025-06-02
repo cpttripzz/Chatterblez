@@ -434,7 +434,6 @@ def create_m4b(chapter_files, filename, cover_image, output_folder):
     Path(concat_file_path).unlink()
     if proc.returncode == 0:
         print(f'{final_filename} created. Enjoy your audiobook.')
-        print('Feel free to delete the intermediary .wav chapter files, the .m4b is all you need.')
 
 
 def probe_duration(file_name):

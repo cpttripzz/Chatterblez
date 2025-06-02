@@ -361,6 +361,9 @@ class MainWindow(wx.Frame):
         sizer.Add(voice_label, pos=(1, 0), flag=wx.ALL, border=border)
         sizer.Add(voice_dropdown, pos=(1, 1), flag=wx.ALL, border=border)
 
+        # Save output folder in config, load on startup
+        saved_output_folder = self.config.Read("output_folder", os.path.abspath('.'))
+
         # Add dropdown for speed
         speed_label = wx.StaticText(panel, label="Speed:")
         speed_text_input = wx.TextCtrl(panel, value="1.0")
@@ -371,9 +374,8 @@ class MainWindow(wx.Frame):
 
         # Add file dialog selector to select output folder
         output_folder_label = wx.StaticText(panel, label="Output Folder:")
-        self.output_folder_text_ctrl = wx.TextCtrl(panel, value=os.path.abspath('.'))
+        self.output_folder_text_ctrl = wx.TextCtrl(panel, value=saved_output_folder)
         self.output_folder_text_ctrl.SetEditable(False)
-        # self.output_folder_text_ctrl.SetMinSize((200, -1))
         output_folder_button = wx.Button(panel, label="📂 Select")
         output_folder_button.Bind(wx.EVT_BUTTON, self.open_output_folder_dialog)
         sizer.Add(output_folder_label, pos=(3, 0), flag=wx.ALL, border=border)
@@ -424,6 +426,7 @@ class MainWindow(wx.Frame):
             output_folder = dialog.GetPath()
             print(f"Selected output folder: {output_folder}")
             self.output_folder_text_ctrl.SetValue(output_folder)
+            self.config.Write("output_folder", output_folder)
 
     def on_select_voice(self, event):
         self.selected_voice = event.GetString()
@@ -735,7 +738,9 @@ class MainWindow(wx.Frame):
                 self.set_table_chapter_status(chapter_index, "Planned")
                 self.table.SetItem(chapter_index, 0, '✔️')
 
-        # self.stop_button.Show()
+        # Save output folder to config on start
+        self.config.Write("output_folder", self.output_folder_text_ctrl.GetValue())
+
         regex_value = self.regex_text_ctrl.GetValue()
         print('Starting Audiobook Synthesis', dict(file_path=file_path, voice=voice, pick_manually=False, speed=speed))
         self.core_thread = CoreThread(params=dict(
