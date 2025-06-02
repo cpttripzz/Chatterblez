@@ -205,41 +205,52 @@ class MainWindow(wx.Frame):
         save_button.Bind(wx.EVT_BUTTON, self.on_save_text)
         undo_button.Bind(wx.EVT_BUTTON, self.on_undo_text)
 
+
         self.chapter_label = wx.StaticText(
             self.center_panel, label=f'Edit / Preview content for section \"{self.selected_chapter.short_name}\":')
         preview_button = wx.Button(self.center_panel, label="🔊 Preview")
         preview_button.Bind(wx.EVT_BUTTON, self.on_preview_chapter)
 
+        # Add checkbox to show/hide regex controls, next to preview button
+        preview_and_regex_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        preview_and_regex_sizer.Add(preview_button, 0, wx.ALL, 0)
+        self.show_regex_checkbox = wx.CheckBox(self.center_panel, label="Show Regex Tools")
+        self.show_regex_checkbox.SetValue(False)
+        preview_and_regex_sizer.Add(self.show_regex_checkbox, 0, wx.LEFT | wx.ALIGN_CENTER_VERTICAL, 10)
+        self.show_regex_checkbox.Bind(wx.EVT_CHECKBOX, self.on_toggle_regex_panel)
+
         self.center_sizer.Add(self.chapter_label, 0, wx.ALL, 5)
-        self.center_sizer.Add(preview_button, 0, wx.ALL, 5)
+        self.center_sizer.Add(preview_and_regex_sizer, 0, wx.ALL, 5)
 
-        # Add Regex label and text field
-        regex_label = wx.StaticText(self.center_panel, label="Regex:")
-        self.regex_text_ctrl = wx.TextCtrl(self.center_panel, value="", style=wx.TE_PROCESS_ENTER) # Added style
-        self.center_sizer.Add(regex_label, 0, wx.ALL, 5)
-        self.center_sizer.Add(self.regex_text_ctrl, 0, wx.ALL | wx.EXPAND, 5)
+        # Regex controls panel (hidden by default)
+        self.regex_panel = wx.Panel(self.center_panel)
+        regex_panel_sizer = wx.BoxSizer(wx.VERTICAL)
+        self.regex_panel.SetSizer(regex_panel_sizer)
 
-        # Add Replacement String label and text field (NEW)
-        replace_label = wx.StaticText(self.center_panel, label="Replace With:")
-        self.replacement_text_ctrl = wx.TextCtrl(self.center_panel, value="", style=wx.TE_PROCESS_ENTER) # NEW
-        self.center_sizer.Add(replace_label, 0, wx.ALL, 5)
-        self.center_sizer.Add(self.replacement_text_ctrl, 0, wx.ALL | wx.EXPAND, 5) # NEW
+        regex_label = wx.StaticText(self.regex_panel, label="Regex:")
+        self.regex_text_ctrl = wx.TextCtrl(self.regex_panel, value="", style=wx.TE_PROCESS_ENTER)
+        regex_panel_sizer.Add(regex_label, 0, wx.ALL, 5)
+        regex_panel_sizer.Add(self.regex_text_ctrl, 0, wx.ALL | wx.EXPAND, 5)
 
-        # Add Regex Flags checkboxes (NEW)
+        replace_label = wx.StaticText(self.regex_panel, label="Replace With:")
+        self.replacement_text_ctrl = wx.TextCtrl(self.regex_panel, value="", style=wx.TE_PROCESS_ENTER)
+        regex_panel_sizer.Add(replace_label, 0, wx.ALL, 5)
+        regex_panel_sizer.Add(self.replacement_text_ctrl, 0, wx.ALL | wx.EXPAND, 5)
+
         flags_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        self.multiline_checkbox = wx.CheckBox(self.center_panel, label="Multiline (^ $)")
-        self.multiline_checkbox.SetValue(True) # Often useful
+        self.multiline_checkbox = wx.CheckBox(self.regex_panel, label="Multiline (^ $)")
+        self.multiline_checkbox.SetValue(True)
         flags_sizer.Add(self.multiline_checkbox, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 10)
-
-        self.dotall_checkbox = wx.CheckBox(self.center_panel, label="Dotall (.)")
+        self.dotall_checkbox = wx.CheckBox(self.regex_panel, label="Dotall (.)")
         flags_sizer.Add(self.dotall_checkbox, 0, wx.ALIGN_CENTER_VERTICAL)
-        self.center_sizer.Add(flags_sizer, 0, wx.ALL | wx.EXPAND, 5) # NEW
+        regex_panel_sizer.Add(flags_sizer, 0, wx.ALL | wx.EXPAND, 5)
 
-
-        # Add Apply button after regex field
-        apply_regex_button = wx.Button(self.center_panel, label="Apply Regex")
+        apply_regex_button = wx.Button(self.regex_panel, label="Apply Regex")
         apply_regex_button.Bind(wx.EVT_BUTTON, self.on_apply_regex)
-        self.center_sizer.Add(apply_regex_button, 0, wx.ALL, 5)
+        regex_panel_sizer.Add(apply_regex_button, 0, wx.ALL, 5)
+
+        self.center_sizer.Add(self.regex_panel, 0, wx.ALL | wx.EXPAND, 0)
+        self.regex_panel.Hide()
 
         self.center_sizer.Add(self.text_area, 1, wx.ALL | wx.EXPAND, 5)
         btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
@@ -253,6 +264,13 @@ class MainWindow(wx.Frame):
         self.create_right_panel(splitter_right)
         splitter_right_sizer.Add(self.center_panel, 1, wx.ALL | wx.EXPAND, 5)
         splitter_right_sizer.Add(self.right_panel, 1, wx.ALL | wx.EXPAND, 5)
+
+    def on_toggle_regex_panel(self, event):
+        if self.show_regex_checkbox.GetValue():
+            self.regex_panel.Show()
+        else:
+            self.regex_panel.Hide()
+        self.center_panel.Layout()
 
     def about_dialog(self):
         msg = ("A simple tool to generate audiobooks from EPUB files using Kokoro-82M models\n" +
