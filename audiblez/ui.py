@@ -92,8 +92,14 @@ class MainWindow(wx.Frame):
     def on_core_progress(self, event):
         # print('CORE_PROGRESS', event.progress)
         self.progress_bar.SetValue(event.stats.progress)
-        self.progress_bar_label.SetLabel(f"Synthesis Progress: {event.stats.progress}%")
-        self.eta_label.SetLabel(f"Estimated Time Remaining: {event.stats.eta}")
+        if hasattr(event.stats, "stage") and event.stats.stage == "ffmpeg":
+            self.progress_bar_label.SetLabel(f"Multiplexing Progress: {event.stats.progress}%")
+        else:
+            self.progress_bar_label.SetLabel(f"Synthesis Progress: {event.stats.progress}%")
+        if hasattr(event.stats, "eta") and event.stats.eta is not None:
+            self.eta_label.SetLabel(f"Estimated Time Remaining: {event.stats.eta}")
+        else:
+            self.eta_label.SetLabel("Estimated Time Remaining: --")
         self.synth_panel.Layout()
 
     def on_core_finished(self, event):
@@ -109,6 +115,14 @@ class MainWindow(wx.Frame):
             except Exception as e:
                 print(f"Failed to delete {wav_file}: {e}")
         wx.MessageBox("Audiobook synthesis completed successfully!", "Success", style=wx.OK | wx.ICON_INFORMATION)
+        # Clear progress bar, label, and ETA
+        self.progress_bar.SetValue(0)
+        self.progress_bar_label.SetLabel("Synthesis Progress:")
+        self.progress_bar_label.Hide()
+        self.progress_bar.Hide()
+        self.eta_label.SetLabel("Estimated Time Remaining: ")
+        self.eta_label.Hide()
+        self.synth_panel.Layout()
         # Re-enable controls
         if hasattr(self, "start_button"):
             self.start_button.Enable()
