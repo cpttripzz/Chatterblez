@@ -1,5 +1,3 @@
-
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # audiblez - A program to convert e-books into audiobooks using
@@ -455,9 +453,7 @@ def concat_wavs_with_ffmpeg(chapter_files, output_folder, filename, post_event=N
 
     current_time_seconds = 0.0
     concat_error_output = initial_stderr_lines # Start collecting from here
-    last_progress_update = time.time()
-    progress_update_interval = 0.5  # Update progress at most every 0.5 seconds
-    process_start_time = time.time()
+
     try:
         while process.poll() is None or not q_stdout.empty() or not q_stderr.empty():
             # Process stdout for progress
@@ -471,24 +467,12 @@ def concat_wavs_with_ffmpeg(chapter_files, output_folder, filename, post_event=N
                         try:
                             h, m, s = map(float, value.split(':'))
                             current_time_seconds = h * 3600 + m * 60 + s
-                            progress = int((current_time_seconds / total_duration_seconds) * 100)
-                            last_progress_update = time.time()
-                            progress_update_interval = 0.5  # Update progress at most every 0.5 seconds
-
-                            last_progress_update = time.time()
-                            # Only update progress if enough time has passed and we have meaningful progress
-                            if post_event and (time.time() - last_progress_update) > progress_update_interval:
-                                # Calculate more accurate ETA based on current processing rate
-                                elapsed = time.time() - timeout_start
-                                if elapsed > 1 and current_time_seconds > 1:  # Ensure we have meaningful data
-                                    rate = current_time_seconds / elapsed
-                                    remaining_time = (total_duration_seconds - current_time_seconds) / rate if rate > 0 else 0
-                                    eta = strfdelta(remaining_time)
-                                else:
-                                    eta = "Calculating..."
-                                stats_obj = SimpleNamespace(progress=progress, stage="concat", eta=eta)
-                                post_event('CORE_PROGRESS', stats=stats_obj)
-                            # print(f"CONCAT Progress: {progress}% (Time: {current_time_seconds:.2f})") # More debugging
+                            if total_duration_seconds > 0:
+                                progress = int((current_time_seconds / total_duration_seconds) * 100)
+                                if post_event:
+                                    stats_obj = SimpleNamespace(progress=progress, stage="concat", eta=strfdelta(total_duration_seconds - current_time_seconds))
+                                    post_event('CORE_PROGRESS', stats=stats_obj)
+                                # print(f"CONCAT Progress: {progress}% (Time: {current_time_seconds:.2f})") # More debugging
                         except ValueError:
                             pass
                     elif key == "progress" and value == "end":
@@ -518,22 +502,11 @@ def concat_wavs_with_ffmpeg(chapter_files, output_folder, filename, post_event=N
                     try:
                         h, m, s = map(float, value.split(':'))
                         current_time_seconds = h * 3600 + m * 60 + s
-                        if total_duration_seconds > 0 and current_time_seconds > 0:
+                        if total_duration_seconds > 0:
                             progress = int((current_time_seconds / total_duration_seconds) * 100)
-                            # Only update progress if enough time has passed and we have meaningful progress
-                            if post_event and (time.time() - last_progress_update) > progress_update_interval:
-                                # Calculate more accurate ETA based on current processing rate
-                                elapsed = time.time() - timeout_start
-                                if elapsed > 1 and current_time_seconds > 1:  # Ensure we have meaningful data
-                                    rate = current_time_seconds / elapsed
-                                    remaining_time = (
-                                                                 total_duration_seconds - current_time_seconds) / rate if rate > 0 else 0
-                                    eta = strfdelta(remaining_time)
-                                else:
-                                    eta = "Calculating..."
-                                stats_obj = SimpleNamespace(progress=progress, stage="concat", eta=eta)
+                            if post_event:
+                                stats_obj = SimpleNamespace(progress=progress, stage="concat", eta=strfdelta(total_duration_seconds - current_time_seconds))
                                 post_event('CORE_PROGRESS', stats=stats_obj)
-                                last_progress_update = time.time()
                     except ValueError:
                         pass
         while not q_stderr.empty():
@@ -661,20 +634,10 @@ def create_m4b(concat_file_path, filename, cover_image, output_folder, post_even
                         try:
                             h, m, s = map(float, value.split(':'))
                             current_time_seconds = h * 3600 + m * 60 + s
-                            if total_duration_seconds > 0 and current_time_seconds > 0:
+                            if total_duration_seconds > 0:
                                 progress = int((current_time_seconds / total_duration_seconds) * 100)
-                                last_progress_update = time.time()
-                                # Only update progress if enough time has passed and we have meaningful progress
-                                if post_event and (time.time() - last_progress_update) > progress_update_interval:
-                                    # Calculate more accurate ETA based on current processing rate
-                                    elapsed = time.time() - process_start_time
-                                    if elapsed > 1 and current_time_seconds > 1:  # Ensure we have meaningful data
-                                        rate = current_time_seconds / elapsed
-                                        remaining_time = (total_duration_seconds - current_time_seconds) / rate if rate > 0 else 0
-                                        eta = strfdelta(remaining_time)
-                                    else:
-                                        eta = "Calculating..."
-                                    stats_obj = SimpleNamespace(progress=progress, stage="ffmpeg", eta=eta)
+                                if post_event:
+                                    stats_obj = SimpleNamespace(progress=progress, stage="ffmpeg", eta=strfdelta(total_duration_seconds - current_time_seconds))
                                     post_event('CORE_PROGRESS', stats=stats_obj)
                                 # print(f"M4B Progress: {progress}% (Time: {current_time_seconds:.2f})") # More debugging
                         except ValueError:
