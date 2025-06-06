@@ -97,8 +97,30 @@ def set_espeak_library():
         print("On Mac: brew install espeak-ng")
         print("On Linux: sudo apt install espeak-ng")
         print("On Windows: Download from https://github.com/espeak-ng/espeak-ng/releases")
+def match_case(word, replacement):
+    if word.isupper():
+        return replacement.upper()
+    elif word.islower():
+        return replacement.lower()
+    elif word[0].isupper():
+        return replacement.capitalize()
+    else:
+        return replacement  # fallback (e.g., mixed case)
 
 
+def replace_preserve_case(text, old, new):
+    if len(old) != len(new):
+        raise ValueError("Replacement arrays must be the same length.")
+
+    for o, n in zip(old, new):
+        pattern = re.compile(rf'\b{re.escape(o)}\b', re.IGNORECASE)
+
+        def repl(match):
+            return match_case(match.group(), n)
+
+        text = pattern.sub(repl, text)
+
+    return text
 def main(file_path, voice, pick_manually, speed, output_folder='.',
          max_chapters=None, max_sentences=None, selected_chapters=None, post_event=None):
     if post_event: post_event('CORE_STARTED')
@@ -172,7 +194,16 @@ def main(file_path, voice, pick_manually, speed, output_folder='.',
             for line in lines
             if re.search(r'\w', line)
         )
-        print(f"text {text}");
+        bad_words = ["I'd", "I'll", "you’re", "aren't", "it’ll", "couldn’t", "isn’t", "I’ve", "I’m", "wouldn’t",
+                     "there’s"]
+        replacements = [
+            "I would", "I will", "you are", "are not", "it will", "could not",
+            "is not", "I have", "I am", "would not", "there is"
+        ]
+
+
+        text = replace_preserve_case(text, bad_words, replacements)
+
         xhtml_file_name = re.sub(r'[\\/:*?"<>|]', '_', chapter.get_name()).replace(' ', '_').replace('.xhtml', '').replace('.html', '')
         chapter_wav_path = Path(output_folder) / filename.replace(extension, f'_chapter_{i}_{voice}_{xhtml_file_name}.wav')
         chapter_wav_files.append(chapter_wav_path)
