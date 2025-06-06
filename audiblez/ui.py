@@ -93,8 +93,8 @@ class MainWindow(wx.Frame):
     def on_core_progress(self, event):
         # print('CORE_PROGRESS', event.progress)
         self.progress_bar.SetValue(event.stats.progress)
-        if hasattr(event.stats, "stage") and event.stats.stage == "ffmpeg":
-            self.progress_bar_label.SetLabel(f"Multiplexing Progress: {event.stats.progress}%")
+        if hasattr(event.stats, "stage") and (event.stats.stage == "ffmpeg" or event.stats.stage == "concat"):
+            self.progress_bar_label.SetLabel(f"Audio Conversion Progress: {event.stats.progress}%")
         else:
             self.progress_bar_label.SetLabel(f"Synthesis Progress: {event.stats.progress}%")
         if hasattr(event.stats, "eta") and event.stats.eta is not None:
