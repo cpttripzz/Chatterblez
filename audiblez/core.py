@@ -119,7 +119,7 @@ def replace_preserve_case(text, old, new):
         text = pattern.sub(repl, text)
 
     return text
-def main(file_path, voice, pick_manually, speed, output_folder='.',
+def main(file_path, voice, pick_manually, speed, book_year='', output_folder='.',
          max_chapters=None, max_sentences=None, selected_chapters=None, post_event=None):
     if post_event: post_event('CORE_STARTED')
     IS_WINDOWS = sys.platform.startswith("win")
@@ -185,10 +185,10 @@ def main(file_path, voice, pick_manually, speed, output_folder='.',
     chapter_wav_files = []
     for i, chapter in enumerate(selected_chapters, start=1):
         if max_chapters and i > max_chapters: break
-        allowed_chars = r"[^a-zA-Z0-9\s.,;:'\"!?()\[\]-]"
+        allowed_chars = r"[^’a-zA-Z0-9\s.,;:'\"!?()\[\]-]"
         lines = chapter.extracted_text.splitlines()
         text = "\n".join(
-            re.sub(allowed_chars, '', line)
+            re.sub(allowed_chars, '', line.replace('’', '\''))
             for line in lines
             if re.search(r'\w', line)
         )
@@ -228,18 +228,6 @@ def main(file_path, voice, pick_manually, speed, output_folder='.',
         if audio_segments:
             final_audio = np.concatenate(audio_segments)
             soundfile.write(chapter_wav_path, final_audio, sample_rate)
-            # Prepend year to filename
-            try:
-                # Extract year from original filename
-                match_year = re.search(r'(\d{4})', filename)
-                year = match_year.group(1) if match_year else ''
-                if year:
-                    new_name = f"{year} - {chapter_wav_path.name}"
-                    new_path = chapter_wav_path.with_name(new_name)
-                    os.rename(chapter_wav_path, new_path)
-                    chapter_wav_path = new_path
-            except Exception:
-                pass
             end_time = time.time()
             delta_seconds = end_time - start_time
             chars_per_sec = len(text) / delta_seconds
@@ -262,7 +250,7 @@ def main(file_path, voice, pick_manually, speed, output_folder='.',
         create_index_file(title, creator, chapter_wav_files, output_folder)
         try:
             concat_file_path = concat_wavs_with_ffmpeg(chapter_wav_files, output_folder, filename, post_event=post_event)
-            create_m4b(concat_file_path, filename, cover_image, output_folder, post_event=post_event)
+            create_m4b(concat_file_path, filename, book_year, cover_image, output_folder, post_event=post_event)
             if post_event: post_event('CORE_FINISHED')
         except RuntimeError as e:
             print(f"Audiobook creation failed: {e}", file=sys.stderr)
@@ -542,10 +530,12 @@ def concat_wavs_with_ffmpeg(chapter_files, output_folder, filename, post_event=N
     return concat_file_path
 
 
-def create_m4b(concat_file_path, filename, cover_image, output_folder, post_event=None):
+def create_m4b(concat_file_path, filename, book_year, cover_image, output_folder, post_event=None):
     print('Creating M4B file...')
 
-    final_filename = Path(output_folder) / Path(filename).with_suffix('.m4b').name
+    original_name = Path(filename).with_suffix('').name  # removes old suffix
+    new_name = f"{book_year} - {original_name}.m4b"
+    final_filename = Path(output_folder) / new_name
     chapters_txt_path = Path(output_folder) / "chapters.txt"
     print('Creating M4B file...')
 

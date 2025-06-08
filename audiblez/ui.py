@@ -815,11 +815,13 @@ class MainWindow(wx.Frame):
                 self.params_panel.Enable()
                 return
             for file_path in selected_files:
-                print('Starting Audiobook Synthesis (batch)', dict(file_path=file_path, voice=voice, pick_manually=False, speed=speed))
+                year = next((f["year"] for f in self.batch_files if f["path"] == file_path), '')
+                print('Starting Audiobook Synthesis (batch)', dict(file_path=file_path, voice=voice, pick_manually=False, speed=speed, book_year=year))
                 core_thread = CoreThread(params=dict(
                     file_path=file_path, voice=voice, pick_manually=False, speed=speed,
+                    book_year=year,
                     output_folder=self.output_folder_text_ctrl.GetValue(),
-                    selected_chapters=None,
+                    selected_chapters=None
                 ))
                 core_thread.start()
                 core_thread.join()
@@ -839,11 +841,12 @@ class MainWindow(wx.Frame):
         self.config.Write("output_folder", self.output_folder_text_ctrl.GetValue())
 
         regex_value = self.regex_text_ctrl.GetValue()
-        print('Starting Audiobook Synthesis', dict(file_path=file_path, voice=voice, pick_manually=False, speed=speed))
+        print('Starting Audiobook Synthesis', dict(file_path=file_path, voice=voice, pick_manually=False, speed=speed, book_year=self.book_year))
         self.core_thread = CoreThread(params=dict(
             file_path=file_path, voice=voice, pick_manually=False, speed=speed,
+            book_year=self.book_year,
             output_folder=self.output_folder_text_ctrl.GetValue(),
-            selected_chapters=selected_chapters,
+            selected_chapters=selected_chapters
         ))
         self.core_thread.start()
 
