@@ -192,13 +192,16 @@ def main(file_path, voice, pick_manually, speed, output_folder='.',
             for line in lines
             if re.search(r'\w', line)
         )
-        bad_words = ["I'd", "I'll", "you’re", "aren't", "it’ll", "couldn’t", "isn’t", "I’ve", "I’m", "wouldn’t",
-                     "there’s"]
-        replacements = [
-            "I would", "I will", "you are", "are not", "it will", "could not",
-            "is not", "I have", "I am", "would not", "there is"
+        bad_words = [
+            "I'd", "I'll", "you’re", "aren't", "it’ll", "couldn’t", "isn’t", "I’ve", "I’m", "wouldn’t", "there’s",
+            "won't", "weren't", "he'll", "they're", "mr.", "mrs.", "ms.", "dr."
         ]
 
+        replacements = [
+            "I would", "I will", "you are", "are not", "it will", "could not",
+            "is not", "I have", "I am", "would not", "there is",
+            "will not", "were not", "he will", "they are", "Mister", "Misses", "Miss", "Doctor"
+        ]
 
         text = replace_preserve_case(text, bad_words, replacements)
 

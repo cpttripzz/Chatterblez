@@ -115,7 +115,16 @@ class MainWindow(wx.Frame):
                 os.remove(wav_file)
             except Exception as e:
                 print(f"Failed to delete {wav_file}: {e}")
-        wx.MessageBox("Audiobook synthesis completed successfully!", "Success", style=wx.OK | wx.ICON_INFORMATION)
+        elapsed = None
+        if hasattr(self, "synthesis_start_time"):
+            elapsed = time.time() - self.synthesis_start_time
+            mins, secs = divmod(int(elapsed), 60)
+            hours, mins = divmod(mins, 60)
+            elapsed_str = f"{hours}h {mins}m {secs}s" if hours else (f"{mins}m {secs}s" if mins else f"{secs}s")
+            msg = f"Audiobook synthesis completed successfully!\nTotal time elapsed: {elapsed_str}"
+        else:
+            msg = "Audiobook synthesis completed successfully!"
+        wx.MessageBox(msg, "Success", style=wx.OK | wx.ICON_INFORMATION)
         # Clear progress bar, label, and ETA
         self.progress_bar.SetValue(0)
         self.progress_bar_label.SetLabel("Synthesis Progress:")
