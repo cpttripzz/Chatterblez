@@ -194,13 +194,13 @@ def main(file_path, voice, pick_manually, speed, output_folder='.',
         )
         bad_words = [
             "I'd", "I'll", "you’re", "aren't", "it’ll", "couldn’t", "isn’t", "I’ve", "I’m", "wouldn’t", "there’s",
-            "won't", "weren't", "he'll", "they're", "mr.", "mrs.", "ms.", "dr."
+            "won't", "weren't", "he'll", "they're", "mr.", "mrs.", "ms.", "dr.","we'd"
         ]
 
         replacements = [
             "I would", "I will", "you are", "are not", "it will", "could not",
             "is not", "I have", "I am", "would not", "there is",
-            "will not", "were not", "he will", "they are", "Mister", "Misses", "Miss", "Doctor"
+            "will not", "were not", "he will", "they are", "Mister", "Misses", "Miss", "Doctor", "we had"
         ]
 
         text = replace_preserve_case(text, bad_words, replacements)
@@ -228,6 +228,18 @@ def main(file_path, voice, pick_manually, speed, output_folder='.',
         if audio_segments:
             final_audio = np.concatenate(audio_segments)
             soundfile.write(chapter_wav_path, final_audio, sample_rate)
+            # Prepend year to filename
+            try:
+                # Extract year from original filename
+                match_year = re.search(r'(\d{4})', filename)
+                year = match_year.group(1) if match_year else ''
+                if year:
+                    new_name = f"{year} - {chapter_wav_path.name}"
+                    new_path = chapter_wav_path.with_name(new_name)
+                    os.rename(chapter_wav_path, new_path)
+                    chapter_wav_path = new_path
+            except Exception:
+                pass
             end_time = time.time()
             delta_seconds = end_time - start_time
             chars_per_sec = len(text) / delta_seconds

@@ -17,6 +17,7 @@ from wx.lib.scrolledpanel import ScrolledPanel
 from PIL import Image
 from tempfile import NamedTemporaryFile
 from pathlib import Path
+import wikipedia
 
 from audiblez.voices import voices, flags
 import audiblez.core as core # Import core to access probe_duration etc.
@@ -39,6 +40,7 @@ class MainWindow(wx.Frame):
         super().__init__(parent, title=title, size=(self.window_width, self.window_width * 3 // 4))
         self.chapters_panel = None
         self.preview_threads = []
+        self.table = None
         self.selected_chapter = None
         self.selected_book = None
         self.synthesis_in_progress = False
@@ -170,6 +172,11 @@ class MainWindow(wx.Frame):
         open_epub_button = wx.Button(top_panel, label="📁 Open File")
         open_epub_button.Bind(wx.EVT_BUTTON, self.on_open)
         top_sizer.Add(open_epub_button, 0, wx.ALL, 5)
+
+        # Open Folder button for batch mode
+        open_folder_button = wx.Button(top_panel, label="📂 Open Folder")
+        open_folder_button.Bind(wx.EVT_BUTTON, self.on_open_folder)
+        top_sizer.Add(open_folder_button, 0, wx.ALL, 5)
 
         # Open Markdown .md
         # open_md_button = wx.Button(top_panel, label="📁 Open Markdown (.md)")
@@ -349,6 +356,13 @@ class MainWindow(wx.Frame):
         book_details_sizer.Add(author_label, pos=(1, 0), flag=wx.ALL, border=5)
         book_details_sizer.Add(author_text, pos=(1, 1), flag=wx.ALL, border=5)
 
+        # Year input (single-file mode only)
+        if not hasattr(self, 'batch_files'):
+            year_label = wx.StaticText(book_details_panel, label="Year:")
+            self.year_text = wx.TextCtrl(book_details_panel, value=str(getattr(self, 'book_year', '')))
+            book_details_sizer.Add(year_label, pos=(2, 0), flag=wx.ALL, border=5)
+            book_details_sizer.Add(self.year_text, pos=(2, 1), flag=wx.ALL, border=5)
+
         # Add Total length
         length_label = wx.StaticText(book_details_panel, label="Total Length:")
         if not hasattr(self, 'document_chapters'):
@@ -356,8 +370,8 @@ class MainWindow(wx.Frame):
         else:
             total_len = sum([len(c.extracted_text) for c in self.document_chapters])
         length_text = wx.StaticText(book_details_panel, label=f'{total_len:,} characters')
-        book_details_sizer.Add(length_label, pos=(2, 0), flag=wx.ALL, border=5)
-        book_details_sizer.Add(length_text, pos=(2, 1), flag=wx.ALL, border=5)
+        book_details_sizer.Add(length_label, pos=(3, 0), flag=wx.ALL, border=5)
+        book_details_sizer.Add(length_text, pos=(3, 1), flag=wx.ALL, border=5)
 
     def create_params_panel(self):
         panel_box = wx.Panel(self.right_panel, style=wx.SUNKEN_BORDER)
@@ -495,6 +509,14 @@ class MainWindow(wx.Frame):
         meta_creator = book.get_metadata('DC', 'creator')
         self.selected_book_author = meta_creator[0][0] if meta_creator else ''
         self.selected_book = book
+        try:
+            summary = wikipedia.summary(self.selected_book_title, sentences=1)
+            match = re.search(r'(\d{4})', summary)
+            self.book_year = match.group(1) if match else ''
+            print(f"Debug: Wikipedia year for '{self.selected_book_title}': {self.book_year}")
+        except Exception:
+            self.book_year = ''
+            print(f"Debug: Wikipedia lookup failed for '{self.selected_book_title}'")
 
         self.document_chapters = find_document_chapters_and_extract_texts(book)
         good_chapters = find_good_chapters(self.document_chapters)
@@ -578,6 +600,12 @@ class MainWindow(wx.Frame):
         self.document_chapters = chapters
         self.selected_book_title = os.path.splitext(os.path.basename(file_path))[0]
         self.selected_book_author = "Unknown"
+        try:
+            summary = wikipedia.summary(self.selected_book_title, sentences=1)
+            match = re.search(r'(\d{4})', summary)
+            self.book_year = match.group(1) if match else ''
+        except Exception:
+            self.book_year = ''
         self.selected_book = None
         self.selected_chapter = chapters[0] if chapters else None
 
@@ -615,6 +643,9 @@ class MainWindow(wx.Frame):
         if not hasattr(chapter, "saved_text"):
             chapter.saved_text = chapter.extracted_text
         self.text_area.SetValue(chapter.extracted_text)
+        # Restore year field in single-file mode
+        if hasattr(self, 'year_text'):
+            self.year_text.SetValue(str(self.book_year))
         self.chapter_label.SetLabel(f'Edit / Preview content for section "{chapter.short_name}":')
 
     def create_chapters_table_panel(self, good_chapters):
@@ -719,6 +750,9 @@ class MainWindow(wx.Frame):
         if self.selected_chapter:
             self.selected_chapter.saved_text = self.text_area.GetValue()
             self.selected_chapter.extracted_text = self.text_area.GetValue()
+        # Save edited Year field in single‐file mode
+        if hasattr(self, 'year_text'):
+            self.book_year = self.year_text.GetValue()
             # wx.MessageBox("Text saved for this chapter.", "Saved", style=wx.OK | wx.ICON_INFORMATION)
 
     def on_undo_text(self, event):
@@ -767,12 +801,33 @@ class MainWindow(wx.Frame):
 
     def on_start(self, event):
         self.synthesis_in_progress = True
-        file_path = self.selected_file_path
         voice = self.selected_voice.split(' ')[1]  # Remove the flag
         speed = float(self.selected_speed)
-        selected_chapters = [chapter for chapter in self.document_chapters if chapter.is_selected]
         self.start_button.Disable()
         self.params_panel.Disable()
+
+        # Batch mode
+        if hasattr(self, "batch_files") and self.batch_files:
+            selected_files = [f["path"] for f in self.batch_files if f["selected"]]
+            if not selected_files:
+                wx.MessageBox("No files selected for batch synthesis.", "Batch Mode", style=wx.OK | wx.ICON_WARNING)
+                self.start_button.Enable()
+                self.params_panel.Enable()
+                return
+            for file_path in selected_files:
+                print('Starting Audiobook Synthesis (batch)', dict(file_path=file_path, voice=voice, pick_manually=False, speed=speed))
+                core_thread = CoreThread(params=dict(
+                    file_path=file_path, voice=voice, pick_manually=False, speed=speed,
+                    output_folder=self.output_folder_text_ctrl.GetValue(),
+                    selected_chapters=None,
+                ))
+                core_thread.start()
+                core_thread.join()
+            return
+
+        # Single file mode
+        file_path = self.selected_file_path
+        selected_chapters = [chapter for chapter in self.document_chapters if chapter.is_selected]
 
         self.table.EnableCheckBoxes(False)
         for chapter_index, chapter in enumerate(self.document_chapters):
@@ -789,7 +844,7 @@ class MainWindow(wx.Frame):
             file_path=file_path, voice=voice, pick_manually=False, speed=speed,
             output_folder=self.output_folder_text_ctrl.GetValue(),
             selected_chapters=selected_chapters,
-            ))
+        ))
         self.core_thread.start()
 
     def set_table_chapter_status(self, index, status_text):
@@ -824,6 +879,131 @@ class MainWindow(wx.Frame):
                 self.open_pdf(pathname)
             else:
                 wx.MessageBox("Unsupported file type.", "Error", style=wx.OK | wx.ICON_ERROR)
+
+    def on_open_folder(self, event):
+        with wx.DirDialog(self, "Select a folder containing e-books", style=wx.DD_DEFAULT_STYLE) as dirDialog:
+            if dirDialog.ShowModal() == wx.ID_CANCEL:
+                return
+            folder_path = dirDialog.GetPath()
+            # Scan for supported files
+            supported_exts = [".epub", ".pdf"]
+            files = [os.path.join(folder_path, f) for f in os.listdir(folder_path)
+                     if os.path.isfile(os.path.join(folder_path, f)) and os.path.splitext(f)[1].lower() in supported_exts]
+            if not files:
+                wx.MessageBox("No supported files (.epub, .pdf) found in the selected folder.", "No Files", style=wx.OK | wx.ICON_INFORMATION)
+                return
+            self.batch_files = [{"path": f, "selected": True, "year": ""} for f in files]
+            for fileinfo in self.batch_files:
+                fname = os.path.splitext(os.path.basename(fileinfo["path"]))[0]
+                if " - " in fname:
+                    title, author = fname.split(" - ", 1)
+                else:
+                    title, author = fname, ""
+                try:
+                    summary = wikipedia.summary(f"{title} {author}", sentences=1)
+                    match = re.search(r'(\d{4})', summary)
+                    fileinfo["year"] = match.group(1) if match else ""
+                    print(f"Debug: Wikipedia year for '{fileinfo['path']}': {fileinfo['year']}")
+                except Exception:
+                    fileinfo["year"] = ""
+                    print(f"Debug: Wikipedia lookup failed for '{fileinfo['path']}'")
+
+            # Ensure left panel exists for batch mode
+            # Fully reset splitter and both panels for batch mode (mirror create_layout_for_ebook)
+            for child in self.splitter.GetChildren():
+                child.Destroy()
+            self.splitter_sizer.Clear(delete_windows=True)
+            # Left panel
+            self.splitter_left = wx.Panel(self.splitter, -1)
+            self.left_sizer = wx.BoxSizer(wx.VERTICAL)
+            self.splitter_left.SetSizer(self.left_sizer)
+            self.splitter_sizer.Add(self.splitter_left, 1, wx.ALL | wx.EXPAND, 5)
+            # Right panel
+            self.splitter_right = wx.Panel(self.splitter)
+            self.right_sizer = wx.BoxSizer(wx.VERTICAL)
+            self.splitter_right.SetSizer(self.right_sizer)
+            self.splitter_sizer.Add(self.splitter_right, 2, wx.ALL | wx.EXPAND, 5)
+            self.selected_book_title = "Batch Mode"
+            self.selected_book_author = "Multiple Files"
+            self.create_right_panel(self.splitter_right)
+            # Add horizontal sizer to splitter_right, add dummy center_panel and right_panel (mirror create_layout_for_ebook)
+            splitter_right_sizer = wx.BoxSizer(wx.HORIZONTAL)
+            # Dummy center_panel (hidden, just for layout)
+            self.center_panel = wx.Panel(self.splitter_right)
+            self.center_panel.Hide()
+            splitter_right_sizer.Add(self.center_panel, 1, wx.ALL | wx.EXPAND, 5)
+            splitter_right_sizer.Add(self.right_panel, 1, wx.ALL | wx.EXPAND, 5)
+            self.splitter_right.SetSizer(splitter_right_sizer)
+            # Add batch panel to left
+            batch_panel = self.create_batch_files_panel(self.batch_files)
+            self.left_sizer.Add(batch_panel, 1, wx.ALL | wx.EXPAND, 5)
+            self.chapters_panel = batch_panel
+            self.splitter.SetSizer(self.splitter_sizer)
+            self.splitter_left.Layout()
+            self.splitter_right.Layout()
+            self.right_panel.Show()
+            self.right_panel.Layout()
+            self.splitter_sizer.Layout()
+            self.splitter.Layout()
+
+    def create_batch_files_panel(self, batch_files):
+        panel = ScrolledPanel(self.splitter_left, -1, style=wx.TAB_TRAVERSAL | wx.SUNKEN_BORDER)
+        sizer = wx.BoxSizer(wx.VERTICAL)
+        panel.SetSizer(sizer)
+
+        self.batch_table = table = wx.ListCtrl(panel, style=wx.LC_REPORT | wx.BORDER_SUNKEN)
+        table.InsertColumn(0, "Included")
+        table.InsertColumn(1, "File Name")
+        table.InsertColumn(2, "Year")
+        table.InsertColumn(3, "File Path")
+        table.SetColumnWidth(0, 80)
+        table.SetColumnWidth(1, 200)
+        table.SetColumnWidth(2, 80)
+        table.SetColumnWidth(3, 400)
+        table.SetSize((600, -1))
+        table.EnableCheckBoxes()
+        table.Bind(wx.EVT_LIST_ITEM_CHECKED, self.on_batch_table_checked)
+        table.Bind(wx.EVT_LIST_ITEM_UNCHECKED, self.on_batch_table_unchecked)
+
+        for i, fileinfo in enumerate(batch_files):
+            fname = os.path.basename(fileinfo["path"])
+            table.Append(['', fname, fileinfo["year"], fileinfo["path"]])
+            table.CheckItem(i)
+
+        title_text = wx.StaticText(panel, label=f"Select files to include in batch synthesis:")
+        sizer.Add(title_text, 0, wx.ALL, 5)
+
+        # Add Select All / Unselect All buttons
+        btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        select_all_btn = wx.Button(panel, label="Select All")
+        unselect_all_btn = wx.Button(panel, label="Unselect All")
+        btn_sizer.Add(select_all_btn, 0, wx.ALL, 2)
+        btn_sizer.Add(unselect_all_btn, 0, wx.ALL, 2)
+        sizer.Add(btn_sizer, 0, wx.ALL, 5)
+
+        select_all_btn.Bind(wx.EVT_BUTTON, self.on_select_all_batch_files)
+        unselect_all_btn.Bind(wx.EVT_BUTTON, self.on_unselect_all_batch_files)
+
+        sizer.Add(table, 1, wx.ALL | wx.EXPAND, 5)
+        return panel
+
+    def on_batch_table_checked(self, event):
+        idx = event.GetIndex()
+        self.batch_files[idx]["selected"] = True
+
+    def on_batch_table_unchecked(self, event):
+        idx = event.GetIndex()
+        self.batch_files[idx]["selected"] = False
+
+    def on_select_all_batch_files(self, event):
+        for i, fileinfo in enumerate(self.batch_files):
+            self.batch_table.CheckItem(i, True)
+            fileinfo["selected"] = True
+
+    def on_unselect_all_batch_files(self, event):
+        for i, fileinfo in enumerate(self.batch_files):
+            self.batch_table.CheckItem(i, False)
+            fileinfo["selected"] = False
 
 # --- Add this at the end to make the app runnable ---
 class CoreThread(threading.Thread):
