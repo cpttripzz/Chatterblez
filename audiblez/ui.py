@@ -18,6 +18,7 @@ from PIL import Image
 from tempfile import NamedTemporaryFile
 from pathlib import Path
 import wikipedia
+import json
 
 from audiblez.voices import voices, flags
 import audiblez.core as core # Import core to access probe_duration etc.
@@ -344,34 +345,71 @@ class MainWindow(wx.Frame):
         book_details_panel.SetSizer(book_details_sizer)
         self.book_info_sizer.Add(book_details_panel, 1, wx.ALL | wx.EXPAND, 5)
 
-        # Add title
-        title_label = wx.StaticText(book_details_panel, label="Title:")
-        title_text = wx.StaticText(book_details_panel, label=self.selected_book_title)
-        book_details_sizer.Add(title_label, pos=(0, 0), flag=wx.ALL, border=5)
-        book_details_sizer.Add(title_text, pos=(0, 1), flag=wx.ALL, border=5)
+        # Batch mode: show editable title/year for selected file
+        if hasattr(self, 'batch_files') and getattr(self, 'batch_files', None):
+            # Track selected file index, default to 0
+            if not hasattr(self, 'selected_batch_file_idx'):
+                self.selected_batch_file_idx = 0
+            selected_idx = getattr(self, 'selected_batch_file_idx', 0)
+            if selected_idx >= len(self.batch_files):
+                selected_idx = 0
+            fileinfo = self.batch_files[selected_idx]
+            # Editable Title
+            title_label = wx.StaticText(book_details_panel, label="Title:")
+            self.batch_title_text = wx.TextCtrl(book_details_panel, value=fileinfo.get("title") or os.path.splitext(os.path.basename(fileinfo["path"]))[0])
+            book_details_sizer.Add(title_label, pos=(0, 0), flag=wx.ALL, border=5)
+            book_details_sizer.Add(self.batch_title_text, pos=(0, 1), flag=wx.ALL, border=5)
+            # Editable Year
+            year_label = wx.StaticText(book_details_panel, label="Year:")
+            self.batch_year_text = wx.TextCtrl(book_details_panel, value=fileinfo.get("year", ""))
+            book_details_sizer.Add(year_label, pos=(1, 0), flag=wx.ALL, border=5)
+            book_details_sizer.Add(self.batch_year_text, pos=(1, 1), flag=wx.ALL, border=5)
+            # Save button for batch file details
+            save_btn = wx.Button(book_details_panel, label="💾 Save Details")
+            def on_save_batch_details(event):
+                # Save title/year to batch_files
+                self.batch_files[selected_idx]["title"] = self.batch_title_text.GetValue()
+                self.batch_files[selected_idx]["year"] = self.batch_year_text.GetValue()
+                # Persist batch state to disk
+                try:
+                    with open("batch_state.json", "w", encoding="utf-8") as f:
+                        json.dump(self.batch_files, f, ensure_ascii=False, indent=2)
+                except Exception as e:
+                    wx.MessageBox(f"Failed to save batch state: {e}", "Error", style=wx.OK | wx.ICON_ERROR)
+                else:
+                    wx.MessageBox("Batch file details saved.", "Saved", style=wx.OK | wx.ICON_INFORMATION)
+            save_btn.Bind(wx.EVT_BUTTON, on_save_batch_details)
+            book_details_sizer.Add(save_btn, pos=(2, 1), flag=wx.ALL, border=5)
+            # Show file path
+            path_label = wx.StaticText(book_details_panel, label="File Path:")
+            path_text = wx.StaticText(book_details_panel, label=fileinfo["path"])
+            book_details_sizer.Add(path_label, pos=(3, 0), flag=wx.ALL, border=5)
+            book_details_sizer.Add(path_text, pos=(3, 1), flag=wx.ALL, border=5)
+        else:
+            # Single-file mode (original)
+            title_label = wx.StaticText(book_details_panel, label="Title:")
+            title_text = wx.StaticText(book_details_panel, label=self.selected_book_title)
+            book_details_sizer.Add(title_label, pos=(0, 0), flag=wx.ALL, border=5)
+            book_details_sizer.Add(title_text, pos=(0, 1), flag=wx.ALL, border=5)
 
-        # Add Author
-        author_label = wx.StaticText(book_details_panel, label="Author:")
-        author_text = wx.StaticText(book_details_panel, label=self.selected_book_author)
-        book_details_sizer.Add(author_label, pos=(1, 0), flag=wx.ALL, border=5)
-        book_details_sizer.Add(author_text, pos=(1, 1), flag=wx.ALL, border=5)
+            author_label = wx.StaticText(book_details_panel, label="Author:")
+            author_text = wx.StaticText(book_details_panel, label=self.selected_book_author)
+            book_details_sizer.Add(author_label, pos=(1, 0), flag=wx.ALL, border=5)
+            book_details_sizer.Add(author_text, pos=(1, 1), flag=wx.ALL, border=5)
 
-        # Year input (single-file mode only)
-        if not hasattr(self, 'batch_files'):
             year_label = wx.StaticText(book_details_panel, label="Year:")
             self.year_text = wx.TextCtrl(book_details_panel, value=str(getattr(self, 'book_year', '')))
             book_details_sizer.Add(year_label, pos=(2, 0), flag=wx.ALL, border=5)
             book_details_sizer.Add(self.year_text, pos=(2, 1), flag=wx.ALL, border=5)
 
-        # Add Total length
-        length_label = wx.StaticText(book_details_panel, label="Total Length:")
-        if not hasattr(self, 'document_chapters'):
-            total_len = 0
-        else:
-            total_len = sum([len(c.extracted_text) for c in self.document_chapters])
-        length_text = wx.StaticText(book_details_panel, label=f'{total_len:,} characters')
-        book_details_sizer.Add(length_label, pos=(3, 0), flag=wx.ALL, border=5)
-        book_details_sizer.Add(length_text, pos=(3, 1), flag=wx.ALL, border=5)
+            length_label = wx.StaticText(book_details_panel, label="Total Length:")
+            if not hasattr(self, 'document_chapters'):
+                total_len = 0
+            else:
+                total_len = sum([len(c.extracted_text) for c in self.document_chapters])
+            length_text = wx.StaticText(book_details_panel, label=f'{total_len:,} characters')
+            book_details_sizer.Add(length_label, pos=(3, 0), flag=wx.ALL, border=5)
+            book_details_sizer.Add(length_text, pos=(3, 1), flag=wx.ALL, border=5)
 
     def create_params_panel(self):
         panel_box = wx.Panel(self.right_panel, style=wx.SUNKEN_BORDER)
@@ -509,14 +547,14 @@ class MainWindow(wx.Frame):
         meta_creator = book.get_metadata('DC', 'creator')
         self.selected_book_author = meta_creator[0][0] if meta_creator else ''
         self.selected_book = book
-        try:
-            summary = wikipedia.summary(self.selected_book_title, sentences=1)
-            match = re.search(r'(\d{4})', summary)
-            self.book_year = match.group(1) if match else ''
-            print(f"Debug: Wikipedia year for '{self.selected_book_title}': {self.book_year}")
-        except Exception:
-            self.book_year = ''
-            print(f"Debug: Wikipedia lookup failed for '{self.selected_book_title}'")
+        # try:
+        #     summary = wikipedia.summary(self.selected_book_title, sentences=1)
+        #     match = re.search(r'(\d{4})', summary)
+        #     self.book_year = match.group(1) if match else ''
+        #     print(f"Debug: Wikipedia year for '{self.selected_book_title}': {self.book_year}")
+        # except Exception:
+        #     self.book_year = ''
+        #     print(f"Debug: Wikipedia lookup failed for '{self.selected_book_title}'")
 
         self.document_chapters = find_document_chapters_and_extract_texts(book)
         good_chapters = find_good_chapters(self.document_chapters)
@@ -600,12 +638,13 @@ class MainWindow(wx.Frame):
         self.document_chapters = chapters
         self.selected_book_title = os.path.splitext(os.path.basename(file_path))[0]
         self.selected_book_author = "Unknown"
-        try:
-            summary = wikipedia.summary(self.selected_book_title, sentences=1)
-            match = re.search(r'(\d{4})', summary)
-            self.book_year = match.group(1) if match else ''
-        except Exception:
-            self.book_year = ''
+        # try:
+        #     summary = wikipedia.summary(self.selected_book_title, sentences=1)
+        #     match = re.search(r'(\d{4})', summary)
+        #     self.book_year = match.group(1) if match else ''
+        # except Exception:
+        #     self.book_year = ''
+        self.book_year = ''            
         self.selected_book = None
         self.selected_chapter = chapters[0] if chapters else None
 
@@ -896,6 +935,16 @@ class MainWindow(wx.Frame):
                 wx.MessageBox("No supported files (.epub, .pdf) found in the selected folder.", "No Files", style=wx.OK | wx.ICON_INFORMATION)
                 return
             self.batch_files = [{"path": f, "selected": True, "year": ""} for f in files]
+            # Try to load batch state from disk and merge
+            try:
+                with open("batch_state.json", "r", encoding="utf-8") as f:
+                    saved_batch = json.load(f)
+                saved_map = {item["path"]: item for item in saved_batch}
+                for fileinfo in self.batch_files:
+                    if fileinfo["path"] in saved_map:
+                        fileinfo.update({k: v for k, v in saved_map[fileinfo["path"]].items() if k in ("title", "year")})
+            except Exception:
+                pass
             for fileinfo in self.batch_files:
                 fname = os.path.splitext(os.path.basename(fileinfo["path"]))[0]
                 if " - " in fname:
@@ -905,10 +954,10 @@ class MainWindow(wx.Frame):
                 try:
                     summary = wikipedia.summary(f"{title} {author}", sentences=1)
                     match = re.search(r'(\d{4})', summary)
-                    fileinfo["year"] = match.group(1) if match else ""
+                    fileinfo["year"] = match.group(1) if match else fileinfo.get("year", "")
                     print(f"Debug: Wikipedia year for '{fileinfo['path']}': {fileinfo['year']}")
                 except Exception:
-                    fileinfo["year"] = ""
+                    fileinfo["year"] = fileinfo.get("year", "")
                     print(f"Debug: Wikipedia lookup failed for '{fileinfo['path']}'")
 
             # Ensure left panel exists for batch mode
@@ -967,6 +1016,7 @@ class MainWindow(wx.Frame):
         table.EnableCheckBoxes()
         table.Bind(wx.EVT_LIST_ITEM_CHECKED, self.on_batch_table_checked)
         table.Bind(wx.EVT_LIST_ITEM_UNCHECKED, self.on_batch_table_unchecked)
+        table.Bind(wx.EVT_LIST_ITEM_SELECTED, self.on_batch_table_selected)
 
         for i, fileinfo in enumerate(batch_files):
             fname = os.path.basename(fileinfo["path"])
@@ -997,6 +1047,18 @@ class MainWindow(wx.Frame):
     def on_batch_table_unchecked(self, event):
         idx = event.GetIndex()
         self.batch_files[idx]["selected"] = False
+
+    def on_batch_table_selected(self, event):
+        idx = event.GetIndex()
+        self.selected_batch_file_idx = idx
+        # Refresh the book details panel
+        # Remove and recreate the book details panel
+        for child in self.book_info_panel.GetChildren():
+            child.Destroy()
+        self.create_book_details_panel()
+        self.book_info_panel.Layout()
+        self.book_info_panel.Parent.Layout()
+        self.right_panel.Layout()
 
     def on_select_all_batch_files(self, event):
         for i, fileinfo in enumerate(self.batch_files):
