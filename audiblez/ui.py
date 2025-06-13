@@ -813,29 +813,40 @@ class MainWindow(wx.Frame):
         return float(self.selected_speed)
 
     def on_preview_chapter(self, event):
-        # Synthesize and play a preview (first 100 chars) using ChatterboxTTS and current prompt
+        # Synthesize and play a preview (first 1000 chars) using ChatterboxTTS and current prompt, chunked for responsiveness
         text = self.text_area.GetValue()[:1000]
         if not text.strip():
             wx.MessageBox("No text to preview.", "Preview Unavailable", style=wx.OK | wx.ICON_INFORMATION)
             return
         try:
+            import re
             device = "cuda" if torch.cuda.is_available() else "cpu"
             cb_model = ChatterboxTTS.from_pretrained(device=device)
             if self.selected_wav_path:
                 cb_model.prepare_conditionals(wav_fpath=self.selected_wav_path)
             torch.manual_seed(12345)
-            wav = cb_model.generate(text)
-            # Save to temp file and play
-            with NamedTemporaryFile(suffix=".wav", delete=False) as tmpf:
-                ta.save(tmpf.name, wav, cb_model.sr)
-                tmpf.flush()
-                # Play using OS default player
-                if platform.system() == "Windows":
-                    os.startfile(tmpf.name)
-                elif platform.system() == "Darwin":
-                    subprocess.Popen(["afplay", tmpf.name])
-                else:
-                    subprocess.Popen(["aplay", tmpf.name])
+            # Split into sentences or ~50 char chunks for responsiveness
+            # Prefer sentence split, fallback to fixed size
+            sentences = re.split(r'(?<=[.!?])\s+', text)
+            chunks = []
+            for sent in sentences:
+                if sent.strip():
+                    chunks.append(sent.strip())
+            if not chunks:
+                # fallback: fixed size chunks
+                chunks = [text[i:i+50] for i in range(0, len(text), 50)]
+            for chunk in chunks:
+                wav = cb_model.generate(chunk)
+                with NamedTemporaryFile(suffix=".wav", delete=False) as tmpf:
+                    ta.save(tmpf.name, wav, cb_model.sr)
+                    tmpf.flush()
+                    # Play using OS default player
+                    if platform.system() == "Windows":
+                        os.startfile(tmpf.name)
+                    elif platform.system() == "Darwin":
+                        subprocess.Popen(["afplay", tmpf.name])
+                    else:
+                        subprocess.Popen(["aplay", tmpf.name])
         except Exception as e:
             wx.MessageBox(f"Preview failed: {e}", "Preview Error", style=wx.OK | wx.ICON_ERROR)
 
