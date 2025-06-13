@@ -24,7 +24,6 @@ from tabulate import tabulate
 from pathlib import Path
 from string import Formatter
 from bs4 import BeautifulSoup
-from kokoro import KPipeline
 from ebooklib import epub
 from pick import pick
 import threading
@@ -120,7 +119,7 @@ def replace_preserve_case(text, old, new):
 
     return text
 def main(file_path, voice, pick_manually, speed, book_year='', output_folder='.',
-         max_chapters=None, max_sentences=None, selected_chapters=None, post_event=None):
+         max_chapters=None, max_sentences=None, selected_chapters=None, post_event=None, model="kokortts"):
     if post_event: post_event('CORE_STARTED')
     IS_WINDOWS = sys.platform.startswith("win")
 
@@ -179,62 +178,70 @@ def main(file_path, voice, pick_manually, speed, book_year='', output_folder='.'
     print('Total words:', len(' '.join(texts).split()))
     eta = strfdelta((stats.total_chars - stats.processed_chars) / stats.chars_per_sec)
     print(f'Estimated time remaining (assuming {stats.chars_per_sec} chars/sec): {eta}')
-    set_espeak_library()
-    pipeline = KPipeline(lang_code=voice[0])
-
     chapter_wav_files = []
-    for i, chapter in enumerate(selected_chapters, start=1):
-        if max_chapters and i > max_chapters: break
-        allowed_chars = r"[^’a-zA-Z0-9\s.,;:'\"!?()\[\]-]"
-        lines = chapter.extracted_text.splitlines()
-        text = "\n".join(
-            re.sub(allowed_chars, '', line.replace('’', '\''))
-            for line in lines
-            if re.search(r'\w', line)
-        )
-        bad_words = [
-            "mr.", "mrs.", "ms.", "dr."
-        ]
 
-        replacements = [
-             "Mister", "Misses", "Miss", "Doctor"
-        ]
+    if model == "chatterbox":
+        import torchaudio as ta
+        from chatterbox.tts import ChatterboxTTS
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        cb_model = ChatterboxTTS.from_pretrained(device=device)
+        # You must set AUDIO_PROMPT_PATH to the correct path for your audio prompt
+        # AUDIO_PROMPT_PATH = "audio_prompt.wav"  # <-- Set this to your actual prompt file
+        # cb_model.prepare_conditionals(wav_fpath=AUDIO_PROMPT_PATH)
 
-        text = replace_preserve_case(text, bad_words, replacements)
+        silence = torch.zeros(int(24000 * 0.25))
+        audio_segments = []
+        nlp = spacy.load('xx_ent_wiki_sm')
+        nlp.add_pipe('sentencizer')
+        for i, chapter in enumerate(selected_chapters, start=1):
+            if max_chapters and i > max_chapters: break
+            allowed_chars = r"[^’a-zA-Z0-9\s.,;:'\"!?()\[\]-]"
+            lines = chapter.extracted_text.splitlines()
+            text = "\n".join(
+                re.sub(allowed_chars, '', line.replace('’', '\''))
+                for line in lines
+                if re.search(r'\w', line)
+            )
+            if i == 1:
+                text = f'{title} – {creator}.\n\n' + text
+            if len(text.strip()) < 10:
+                print(f'Skipping empty chapter {i}')
+                continue
+            if post_event and hasattr(chapter, "chapter_index"):
+                post_event('CORE_CHAPTER_STARTED', chapter_index=chapter.chapter_index)
+            # Split text into <=1000 char chunks at sentence boundaries using spacy
 
-        xhtml_file_name = re.sub(r'[\\/:*?"<>|]', '_', chapter.get_name()).replace(' ', '_').replace('.xhtml', '').replace('.html', '')
-        chapter_wav_path = Path(output_folder) / filename.replace(extension, f'_chapter_{i}_{voice}_{xhtml_file_name}.wav')
-        chapter_wav_files.append(chapter_wav_path)
-        if Path(chapter_wav_path).exists():
-            print(f'File for chapter {i} already exists. Skipping')
-            stats.processed_chars += len(text)
+            doc = nlp(text)
+            sentences = [sent.text.strip() for sent in doc.sents if sent.text.strip()]
+            chunks = []
+            current_chunk = ""
+            for sent in sentences:
+                if len(current_chunk) + len(sent) + 1 > 1000:
+                    if current_chunk:
+                        chunks.append(current_chunk.strip())
+                    current_chunk = sent
+                else:
+                    if current_chunk:
+                        current_chunk += " " + sent
+                    else:
+                        current_chunk = sent
+            if current_chunk:
+                chunks.append(current_chunk.strip())
+
+            for chunk in chunks:
+                torch.manual_seed(12345)
+                wav = cb_model.generate(chunk)
+                audio_segments.append(wav)
+                audio_segments.append(silence.unsqueeze(0))
             if post_event and hasattr(chapter, "chapter_index"):
                 post_event('CORE_CHAPTER_FINISHED', chapter_index=chapter.chapter_index)
-            continue
-        if len(text.strip()) < 10:
-            print(f'Skipping empty chapter {i}')
-            chapter_wav_files.remove(chapter_wav_path)
-            continue
-        if i == 1:
-            text = f'{title} – {creator}.\n\n' + text
-        start_time = time.time()
-        if post_event and hasattr(chapter, "chapter_index"):
-            post_event('CORE_CHAPTER_STARTED', chapter_index=chapter.chapter_index)
-        audio_segments = gen_audio_segments(
-            pipeline, text, voice, speed, stats, post_event=post_event, max_sentences=max_sentences)
+
         if audio_segments:
-            final_audio = np.concatenate(audio_segments)
-            soundfile.write(chapter_wav_path, final_audio, sample_rate)
-            end_time = time.time()
-            delta_seconds = end_time - start_time
-            chars_per_sec = len(text) / delta_seconds
-            print('Chapter written to', chapter_wav_path)
-            if post_event and hasattr(chapter, "chapter_index"):
-                post_event('CORE_CHAPTER_FINISHED', chapter_index=chapter.chapter_index)
-            print(f'Chapter {i} read in {delta_seconds:.2f} seconds ({chars_per_sec:.0f} characters per second)')
+            final_audio = torch.cat(audio_segments, dim=1)
+            ta.save("test.wav", final_audio, cb_model.sr)
+            print('All chapters concatenated and written to test.wav')
         else:
-            print(f'Warning: No audio generated for chapter {i}')
-            chapter_wav_files.remove(chapter_wav_path)
+            print("No audio segments generated.")
 
     if not chapter_wav_files:
         print("No audio chapters were generated. Cannot create audiobook.", file=sys.stderr)

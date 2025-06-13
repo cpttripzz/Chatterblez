@@ -20,8 +20,8 @@ from pathlib import Path
 import wikipedia
 import json
 
-from audiblez.voices import voices, flags
-import audiblez.core as core # Import core to access probe_duration etc.
+from voices import voices, flags
+import core as core # Import core to access probe_duration etc.
 
 EVENTS = {
     'CORE_STARTED': NewEvent(),
@@ -45,6 +45,7 @@ class MainWindow(wx.Frame):
         self.selected_chapter = None
         self.selected_book = None
         self.synthesis_in_progress = False
+        self.book_year = ''  # Always initialize book_year
 
         self.Bind(EVENTS['CORE_STARTED'][1], self.on_core_started)
         self.Bind(EVENTS['CORE_CHAPTER_STARTED'][1], self.on_core_chapter_started)
@@ -422,6 +423,9 @@ class MainWindow(wx.Frame):
         sizer = wx.GridBagSizer(10, 10)
         panel.SetSizer(sizer)
 
+        # No model selection: only ChatterboxTTS is supported.
+        self.selected_model = "chatterbox"
+
         engine_label = wx.StaticText(panel, label="Engine:")
         engine_radio_panel = wx.Panel(panel)
         cpu_radio = wx.RadioButton(engine_radio_panel, label="CPU", style=wx.RB_GROUP)
@@ -430,9 +434,8 @@ class MainWindow(wx.Frame):
             cuda_radio.SetValue(True)
         else:
             cpu_radio.SetValue(True)
-            # cuda_radio.Disable()
-        sizer.Add(engine_label, pos=(0, 0), flag=wx.ALL, border=border)
-        sizer.Add(engine_radio_panel, pos=(0, 1), flag=wx.ALL, border=border)
+        sizer.Add(engine_label, pos=(1, 0), flag=wx.ALL, border=border)
+        sizer.Add(engine_radio_panel, pos=(1, 1), flag=wx.ALL, border=border)
         engine_radio_panel_sizer = wx.BoxSizer(wx.HORIZONTAL)
         engine_radio_panel.SetSizer(engine_radio_panel_sizer)
         engine_radio_panel_sizer.Add(cpu_radio, 0, wx.ALL, 5)
@@ -452,8 +455,8 @@ class MainWindow(wx.Frame):
         self.selected_voice = saved_voice
         voice_dropdown = wx.ComboBox(panel, choices=flag_and_voice_list, value=saved_voice)
         voice_dropdown.Bind(wx.EVT_COMBOBOX, self.on_select_voice)
-        sizer.Add(voice_label, pos=(1, 0), flag=wx.ALL, border=border)
-        sizer.Add(voice_dropdown, pos=(1, 1), flag=wx.ALL, border=border)
+        sizer.Add(voice_label, pos=(2, 0), flag=wx.ALL, border=border)
+        sizer.Add(voice_dropdown, pos=(2, 1), flag=wx.ALL, border=border)
 
         # Save output folder in config, load on startup
         saved_output_folder = self.config.Read("output_folder", os.path.abspath('.'))
@@ -463,8 +466,8 @@ class MainWindow(wx.Frame):
         speed_text_input = wx.TextCtrl(panel, value="1.0")
         self.selected_speed = '1.0'
         speed_text_input.Bind(wx.EVT_TEXT, self.on_select_speed)
-        sizer.Add(speed_label, pos=(2, 0), flag=wx.ALL, border=border)
-        sizer.Add(speed_text_input, pos=(2, 1), flag=wx.ALL, border=border)
+        sizer.Add(speed_label, pos=(3, 0), flag=wx.ALL, border=border)
+        sizer.Add(speed_text_input, pos=(3, 1), flag=wx.ALL, border=border)
 
         # Add file dialog selector to select output folder
         output_folder_label = wx.StaticText(panel, label="Output Folder:")
@@ -472,9 +475,9 @@ class MainWindow(wx.Frame):
         self.output_folder_text_ctrl.SetEditable(False)
         output_folder_button = wx.Button(panel, label="📂 Select")
         output_folder_button.Bind(wx.EVT_BUTTON, self.open_output_folder_dialog)
-        sizer.Add(output_folder_label, pos=(3, 0), flag=wx.ALL, border=border)
-        sizer.Add(self.output_folder_text_ctrl, pos=(3, 1), flag=wx.ALL | wx.EXPAND, border=border)
-        sizer.Add(output_folder_button, pos=(4, 1), flag=wx.ALL, border=border)
+        sizer.Add(output_folder_label, pos=(4, 0), flag=wx.ALL, border=border)
+        sizer.Add(self.output_folder_text_ctrl, pos=(4, 1), flag=wx.ALL | wx.EXPAND, border=border)
+        sizer.Add(output_folder_button, pos=(5, 1), flag=wx.ALL, border=border)
 
     def create_synthesis_panel(self):
         # Think and identify layout issue with the folling code
@@ -540,13 +543,14 @@ class MainWindow(wx.Frame):
         print(f"Opening file: {file_path}")  # Do something with the filepath (e.g., parse the EPUB)
 
         from ebooklib import epub
-        from audiblez.core import find_document_chapters_and_extract_texts, find_good_chapters, find_cover
+        from core import find_document_chapters_and_extract_texts, find_good_chapters, find_cover
         book = epub.read_epub(file_path)
         meta_title = book.get_metadata('DC', 'title')
         self.selected_book_title = meta_title[0][0] if meta_title else ''
         meta_creator = book.get_metadata('DC', 'creator')
         self.selected_book_author = meta_creator[0][0] if meta_creator else ''
         self.selected_book = book
+        self.book_year = ''  # Always set book_year, even if empty
         # try:
         #     summary = wikipedia.summary(self.selected_book_title, sentences=1)
         #     match = re.search(r'(\d{4})', summary)
@@ -603,6 +607,8 @@ class MainWindow(wx.Frame):
 
         import PyPDF2
 
+        from core import find_document_chapters_and_extract_texts, find_good_chapters, find_cover
+
         # Extract text from each page
         pdf_reader = PyPDF2.PdfReader(file_path)
         num_pages = len(pdf_reader.pages)
@@ -638,13 +644,7 @@ class MainWindow(wx.Frame):
         self.document_chapters = chapters
         self.selected_book_title = os.path.splitext(os.path.basename(file_path))[0]
         self.selected_book_author = "Unknown"
-        # try:
-        #     summary = wikipedia.summary(self.selected_book_title, sentences=1)
-        #     match = re.search(r'(\d{4})', summary)
-        #     self.book_year = match.group(1) if match else ''
-        # except Exception:
-        #     self.book_year = ''
-        self.book_year = ''            
+        self.book_year = ''  # Always set book_year, even if empty
         self.selected_book = None
         self.selected_chapter = chapters[0] if chapters else None
 
@@ -684,7 +684,7 @@ class MainWindow(wx.Frame):
         self.text_area.SetValue(chapter.extracted_text)
         # Restore year field in single-file mode
         if hasattr(self, 'year_text'):
-            self.year_text.SetValue(str(self.book_year))
+            self.year_text.SetValue(str(getattr(self, 'book_year', '')))
         self.chapter_label.SetLabel(f'Edit / Preview content for section "{chapter.short_name}":')
 
     def create_chapters_table_panel(self, good_chapters):
@@ -805,38 +805,8 @@ class MainWindow(wx.Frame):
         return float(self.selected_speed)
 
     def on_preview_chapter(self, event):
-        lang_code = self.get_selected_voice()[0]
-        button = event.GetEventObject()
-        button.SetLabel("⏳")
-        button.Disable()
-
-        def generate_preview():
-            import audiblez.core as core
-            from kokoro import KPipeline
-            pipeline = KPipeline(lang_code=lang_code)
-            core.load_spacy()
-            text = self.selected_chapter.extracted_text[:300]
-            if len(text) == 0: return
-            audio_segments = core.gen_audio_segments(
-                pipeline,
-                text,
-                voice=self.get_selected_voice(),
-                speed=self.get_selected_speed())
-            final_audio = np.concatenate(audio_segments)
-            tmp_preview_wav_file = NamedTemporaryFile(suffix='.wav', delete=False)
-            soundfile.write(tmp_preview_wav_file, final_audio, core.sample_rate)
-            cmd = ['ffplay', '-autoexit', '-nodisp', tmp_preview_wav_file.name]
-            subprocess.run(cmd)
-            button.SetLabel("🔊 Preview")
-            button.Enable()
-
-        if len(self.preview_threads) > 0:
-            for thread in self.preview_threads:
-                thread.join()
-            self.preview_threads = []
-        thread = threading.Thread(target=generate_preview)
-        thread.start()
-        self.preview_threads.append(thread)
+        # ChatterboxTTS preview not implemented in UI.
+        wx.MessageBox("Preview is not available for ChatterboxTTS.", "Preview Unavailable", style=wx.OK | wx.ICON_INFORMATION)
 
     def on_start(self, event):
         self.synthesis_in_progress = True
@@ -860,7 +830,8 @@ class MainWindow(wx.Frame):
                     file_path=file_path, voice=voice, pick_manually=False, speed=speed,
                     book_year=year,
                     output_folder=self.output_folder_text_ctrl.GetValue(),
-                    selected_chapters=None
+                    selected_chapters=None,
+                    model=self.selected_model
                 ))
                 core_thread.start()
                 core_thread.join()
@@ -880,12 +851,13 @@ class MainWindow(wx.Frame):
         self.config.Write("output_folder", self.output_folder_text_ctrl.GetValue())
 
         regex_value = self.regex_text_ctrl.GetValue()
-        print('Starting Audiobook Synthesis', dict(file_path=file_path, voice=voice, pick_manually=False, speed=speed, book_year=self.book_year))
+        print('Starting Audiobook Synthesis', dict(file_path=file_path, voice=voice, pick_manually=False, speed=speed, book_year=getattr(self, 'book_year', '')))
         self.core_thread = CoreThread(params=dict(
             file_path=file_path, voice=voice, pick_manually=False, speed=speed,
-            book_year=self.book_year,
+            book_year=getattr(self, 'book_year', ''),
             output_folder=self.output_folder_text_ctrl.GetValue(),
-            selected_chapters=selected_chapters
+            selected_chapters=selected_chapters,
+            model=self.selected_model
         ))
         self.core_thread.start()
 
