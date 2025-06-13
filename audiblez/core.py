@@ -118,8 +118,8 @@ def replace_preserve_case(text, old, new):
         text = pattern.sub(repl, text)
 
     return text
-def main(file_path, voice, pick_manually, speed, book_year='', output_folder='.',
-         max_chapters=None, max_sentences=None, selected_chapters=None, post_event=None, model="kokortts", audio_prompt_wav=None):
+def main(file_path,pick_manually, speed, book_year='', output_folder='.',
+         max_chapters=None, max_sentences=None, selected_chapters=None, post_event=None,  audio_prompt_wav=None):
     if post_event: post_event('CORE_STARTED')
     IS_WINDOWS = sys.platform.startswith("win")
 
@@ -180,73 +180,73 @@ def main(file_path, voice, pick_manually, speed, book_year='', output_folder='.'
     print(f'Estimated time remaining (assuming {stats.chars_per_sec} chars/sec): {eta}')
     chapter_wav_files = []
 
-    if model == "chatterbox":
-        import torchaudio as ta
-        from chatterbox.tts import ChatterboxTTS
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        cb_model = ChatterboxTTS.from_pretrained(device=device)
 
-        # If a custom audio prompt is provided, use it
-        if audio_prompt_wav:
-            AUDIO_PROMPT_PATH = audio_prompt_wav
-            cb_model.prepare_conditionals(wav_fpath=AUDIO_PROMPT_PATH)
-        # You must set AUDIO_PROMPT_PATH to the correct path for your audio prompt
-        # AUDIO_PROMPT_PATH = "audio_prompt.wav"  # <-- Set this to your actual prompt file
-        # cb_model.prepare_conditionals(wav_fpath=AUDIO_PROMPT_PATH)
+    import torchaudio as ta
+    from chatterbox.tts import ChatterboxTTS
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    cb_model = ChatterboxTTS.from_pretrained(device=device)
 
-        silence = torch.zeros(int(24000 * 0.25))
-        audio_segments = []
-        nlp = spacy.load('xx_ent_wiki_sm')
-        nlp.add_pipe('sentencizer')
-        for i, chapter in enumerate(selected_chapters, start=1):
-            if max_chapters and i > max_chapters: break
-            allowed_chars = r"[^’a-zA-Z0-9\s.,;:'\"!?()\[\]-]"
-            lines = chapter.extracted_text.splitlines()
-            text = "\n".join(
-                re.sub(allowed_chars, '', line.replace('’', '\''))
-                for line in lines
-                if re.search(r'\w', line)
-            )
-            if i == 1:
-                text = f'{title} – {creator}.\n\n' + text
-            if len(text.strip()) < 10:
-                print(f'Skipping empty chapter {i}')
-                continue
-            if post_event and hasattr(chapter, "chapter_index"):
-                post_event('CORE_CHAPTER_STARTED', chapter_index=chapter.chapter_index)
-            # Split text into <=1000 char chunks at sentence boundaries using spacy
+    # If a custom audio prompt is provided, use it
+    if audio_prompt_wav:
+        AUDIO_PROMPT_PATH = audio_prompt_wav
+        cb_model.prepare_conditionals(wav_fpath=AUDIO_PROMPT_PATH)
+    # You must set AUDIO_PROMPT_PATH to the correct path for your audio prompt
+    # AUDIO_PROMPT_PATH = "audio_prompt.wav"  # <-- Set this to your actual prompt file
+    # cb_model.prepare_conditionals(wav_fpath=AUDIO_PROMPT_PATH)
 
-            doc = nlp(text)
-            sentences = [sent.text.strip() for sent in doc.sents if sent.text.strip()]
-            chunks = []
-            current_chunk = ""
-            for sent in sentences:
-                if len(current_chunk) + len(sent) + 1 > 1000:
-                    if current_chunk:
-                        chunks.append(current_chunk.strip())
-                    current_chunk = sent
+    silence = torch.zeros(int(24000 * 0.25))
+    audio_segments = []
+    nlp = spacy.load('xx_ent_wiki_sm')
+    nlp.add_pipe('sentencizer')
+    for i, chapter in enumerate(selected_chapters, start=1):
+        if max_chapters and i > max_chapters: break
+        allowed_chars = r"[^’a-zA-Z0-9\s.,;:'\"!?()\[\]-]"
+        lines = chapter.extracted_text.splitlines()
+        text = "\n".join(
+            re.sub(allowed_chars, '', line.replace('’', '\''))
+            for line in lines
+            if re.search(r'\w', line)
+        )
+        if i == 1:
+            text = f'{title} – {creator}.\n\n' + text
+        if len(text.strip()) < 10:
+            print(f'Skipping empty chapter {i}')
+            continue
+        if post_event and hasattr(chapter, "chapter_index"):
+            post_event('CORE_CHAPTER_STARTED', chapter_index=chapter.chapter_index)
+        # Split text into <=1000 char chunks at sentence boundaries using spacy
+
+        doc = nlp(text)
+        sentences = [sent.text.strip() for sent in doc.sents if sent.text.strip()]
+        chunks = []
+        current_chunk = ""
+        for sent in sentences:
+            if len(current_chunk) + len(sent) + 1 > 1000:
+                if current_chunk:
+                    chunks.append(current_chunk.strip())
+                current_chunk = sent
+            else:
+                if current_chunk:
+                    current_chunk += " " + sent
                 else:
-                    if current_chunk:
-                        current_chunk += " " + sent
-                    else:
-                        current_chunk = sent
-            if current_chunk:
-                chunks.append(current_chunk.strip())
+                    current_chunk = sent
+        if current_chunk:
+            chunks.append(current_chunk.strip())
 
-            for chunk in chunks:
-                torch.manual_seed(12345)
-                wav = cb_model.generate(chunk)
-                audio_segments.append(wav)
-                audio_segments.append(silence.unsqueeze(0))
-            if post_event and hasattr(chapter, "chapter_index"):
-                post_event('CORE_CHAPTER_FINISHED', chapter_index=chapter.chapter_index)
+        for chunk in chunks:
+            torch.manual_seed(12345)
+            wav = cb_model.generate(chunk)
+            audio_segments.append(wav)
+            audio_segments.append(silence.unsqueeze(0))
+        if post_event and hasattr(chapter, "chapter_index"):
+            post_event('CORE_CHAPTER_FINISHED', chapter_index=chapter.chapter_index)
 
-        if audio_segments:
-            final_audio = torch.cat(audio_segments, dim=1)
-            ta.save("test.wav", final_audio, cb_model.sr)
-            print('All chapters concatenated and written to test.wav')
-        else:
-            print("No audio segments generated.")
+    if audio_segments:
+        final_audio = torch.cat(audio_segments, dim=1)
+        ta.save("test.wav", final_audio, cb_model.sr)
+        print('All chapters concatenated and written to test.wav')
+    else:
+        print("No audio segments generated.")
 
     if not chapter_wav_files:
         print("No audio chapters were generated. Cannot create audiobook.", file=sys.stderr)
@@ -296,36 +296,6 @@ def print_selected_chapters(document_chapters, chapters):
         [i, c.get_name(), len(c.extracted_text), ok if c in chapters else '', chapter_beginning_one_liner(c)]
         for i, c in enumerate(document_chapters, start=1)
     ], headers=['#', 'Chapter', 'Text Length', 'Selected', 'First words']))
-
-
-def gen_audio_segments(pipeline, text, voice, speed, stats=None, max_sentences=None, post_event=None):
-    nlp = spacy.load('xx_ent_wiki_sm')
-    nlp.add_pipe('sentencizer')
-    audio_segments = []
-    doc = nlp(text)
-    sentences = list(doc.sents)
-    for i, sent in enumerate(sentences):
-        if max_sentences and i > max_sentences: break
-        for gs, ps, audio in pipeline(sent.text, voice=voice, speed=speed, split_pattern=r'\n\n\n'):
-            audio_segments.append(audio)
-        if stats:
-            stats.processed_chars += len(sent.text)
-            stats.progress = stats.processed_chars * 100 // stats.total_chars
-            stats.eta = strfdelta((stats.total_chars - stats.processed_chars) / stats.chars_per_sec)
-            if post_event: post_event('CORE_PROGRESS', stats=stats)
-    return audio_segments
-
-
-def gen_text(text, voice='af_heart', output_file='text.wav', speed=1, play=False):
-    lang_code = voice[:1]
-    pipeline = KPipeline(lang_code=lang_code)
-    load_spacy()
-    audio_segments = gen_audio_segments(pipeline, text, voice=voice, speed=speed);
-    final_audio = np.concatenate(audio_segments)
-    soundfile.write(output_file, final_audio, sample_rate)
-    if play:
-        subprocess.run(['ffplay', '-autoexit', '-nodisp', output_file])
-
 
 def find_document_chapters_and_extract_texts(book):
     """Returns every chapter that is an ITEM_DOCUMENT and enriches each chapter with extracted_text."""

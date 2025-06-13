@@ -3,6 +3,8 @@
 # A simple wxWidgets UI for audiblez
 
 import re
+import time
+
 import torch.cuda
 import numpy as np
 import soundfile
@@ -20,7 +22,6 @@ from pathlib import Path
 import wikipedia
 import json
 
-from voices import voices, flags
 import core as core # Import core to access probe_duration etc.
 
 # For preview synthesis
@@ -62,6 +63,10 @@ class MainWindow(wx.Frame):
 
         self.create_menu()
         self.create_layout()
+        # Restore selected wav path from config if present
+        self.selected_wav_path = self.config.Read("selected_wav_path", "")
+        if hasattr(self, "wav_path_label") and self.selected_wav_path:
+            self.wav_path_label.SetLabel(os.path.basename(self.selected_wav_path))
         self.Centre()
         self.Show(True)
         if Path('../epub/lewis.epub').exists(): self.open_epub('../epub/lewis.epub')
@@ -448,18 +453,14 @@ class MainWindow(wx.Frame):
         cpu_radio.Bind(wx.EVT_RADIOBUTTON, lambda event: torch.set_default_device('cpu'))
         cuda_radio.Bind(wx.EVT_RADIOBUTTON, lambda event: torch.set_default_device('cuda'))
 
-        # Create a list of voices with flags
-        flag_and_voice_list = []
-        for code, l in voices.items():
-            for v in l:
-                flag_and_voice_list.append(f'{flags[code]} {v}')
 
-        # Voice selection: replace dropdown with .wav file picker
-        self.selected_wav_path = None
+
+        self.selected_wav_path = self.config.Read("selected_wav_path")
         wav_button = wx.Button(panel, label="Select Voice .wav (optional)")
         wav_button.Bind(wx.EVT_BUTTON, self.on_select_wav)
         sizer.Add(wav_button, pos=(2, 0), flag=wx.ALL, border=border)
-        self.wav_path_label = wx.StaticText(panel, label="")
+        self.wav_path_label = wx.StaticText(panel, label=self.config.Read("selected_wav_path"))
+        
         sizer.Add(self.wav_path_label, pos=(2, 1), flag=wx.ALL, border=border)
 
         # Save output folder in config, load on startup
@@ -536,6 +537,7 @@ class MainWindow(wx.Frame):
             wav_path = fileDialog.GetPath()
             self.selected_wav_path = wav_path
             self.wav_path_label.SetLabel(os.path.basename(wav_path))
+            self.config.Write("selected_wav_path", self.selected_wav_path)  # Save the selected voice
 
     def on_select_speed(self, event):
         speed = float(event.GetString())
@@ -749,8 +751,7 @@ class MainWindow(wx.Frame):
             self.table.CheckItem(i, False)
             chapter.is_selected = False
 
-    def get_selected_voice(self):
-        return self.selected_voice.split(' ')[1]
+
 
     def on_apply_regex(self, event):
         regex = self.regex_text_ctrl.GetValue()
@@ -852,7 +853,6 @@ class MainWindow(wx.Frame):
 
     def on_start(self, event):
         self.synthesis_in_progress = True
-        voice = self.selected_voice.split(' ')[1]  # Remove the flag
         speed = float(self.selected_speed)
         self.start_button.Disable()
         self.params_panel.Disable()
@@ -867,13 +867,13 @@ class MainWindow(wx.Frame):
                 return
             for file_path in selected_files:
                 year = next((f["year"] for f in self.batch_files if f["path"] == file_path), '')
-                print('Starting Audiobook Synthesis (batch)', dict(file_path=file_path, voice=voice, pick_manually=False, speed=speed, book_year=year))
+                print('Starting Audiobook Synthesis (batch)', dict(file_path=file_path, pick_manually=False, speed=speed, book_year=year))
                 core_thread = CoreThread(params=dict(
-                    file_path=file_path, voice=voice, pick_manually=False, speed=speed,
+                    file_path=file_path, pick_manually=False, speed=speed,
                     book_year=year,
                     output_folder=self.output_folder_text_ctrl.GetValue(),
                     selected_chapters=None,
-                    model=self.selected_model
+                    audio_prompt_wav=self.selected_wav_path if self.selected_wav_path else None
                 ))
                 core_thread.start()
                 core_thread.join()
@@ -893,13 +893,12 @@ class MainWindow(wx.Frame):
         self.config.Write("output_folder", self.output_folder_text_ctrl.GetValue())
 
         regex_value = self.regex_text_ctrl.GetValue()
-        print('Starting Audiobook Synthesis', dict(file_path=file_path, voice=voice, pick_manually=False, speed=speed, book_year=getattr(self, 'book_year', ''), audio_prompt_wav=self.selected_wav_path if self.selected_wav_path else None))
+        print('Starting Audiobook Synthesis', dict(file_path=file_path, pick_manually=False, speed=speed, book_year=getattr(self, 'book_year', ''), audio_prompt_wav=self.selected_wav_path if self.selected_wav_path else None))
         self.core_thread = CoreThread(params=dict(
-            file_path=file_path, voice=voice, pick_manually=False, speed=speed,
+            file_path=file_path, pick_manually=False, speed=speed,
             book_year=getattr(self, 'book_year', ''),
             output_folder=self.output_folder_text_ctrl.GetValue(),
             selected_chapters=selected_chapters,
-            model=self.selected_model,
             audio_prompt_wav=self.selected_wav_path if self.selected_wav_path else None
         ))
         self.core_thread.start()
@@ -918,6 +917,9 @@ class MainWindow(wx.Frame):
             subprocess.Popen(["xdg-open", path])
 
     def on_exit(self, event):
+        # Save selected wav path to config
+        if hasattr(self, "selected_wav_path") and self.selected_wav_path:
+            self.config.Write("selected_wav_path", self.selected_wav_path)
         self.Destroy()
 
     def on_open(self, event):
