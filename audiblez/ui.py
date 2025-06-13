@@ -23,6 +23,11 @@ import json
 from voices import voices, flags
 import core as core # Import core to access probe_duration etc.
 
+# For preview synthesis
+import torchaudio as ta
+from chatterbox.tts import ChatterboxTTS
+import torch
+
 EVENTS = {
     'CORE_STARTED': NewEvent(),
     'CORE_PROGRESS': NewEvent(),
@@ -449,14 +454,13 @@ class MainWindow(wx.Frame):
             for v in l:
                 flag_and_voice_list.append(f'{flags[code]} {v}')
 
-        voice_label = wx.StaticText(panel, label="Voice:")
-        # Load saved voice or use default
-        saved_voice = self.config.Read("selected_voice", flag_and_voice_list[0])
-        self.selected_voice = saved_voice
-        voice_dropdown = wx.ComboBox(panel, choices=flag_and_voice_list, value=saved_voice)
-        voice_dropdown.Bind(wx.EVT_COMBOBOX, self.on_select_voice)
-        sizer.Add(voice_label, pos=(2, 0), flag=wx.ALL, border=border)
-        sizer.Add(voice_dropdown, pos=(2, 1), flag=wx.ALL, border=border)
+        # Voice selection: replace dropdown with .wav file picker
+        self.selected_wav_path = None
+        wav_button = wx.Button(panel, label="Select Voice .wav (optional)")
+        wav_button.Bind(wx.EVT_BUTTON, self.on_select_wav)
+        sizer.Add(wav_button, pos=(2, 0), flag=wx.ALL, border=border)
+        self.wav_path_label = wx.StaticText(panel, label="")
+        sizer.Add(self.wav_path_label, pos=(2, 1), flag=wx.ALL, border=border)
 
         # Save output folder in config, load on startup
         saved_output_folder = self.config.Read("output_folder", os.path.abspath('.'))
@@ -525,9 +529,13 @@ class MainWindow(wx.Frame):
             self.output_folder_text_ctrl.SetValue(output_folder)
             self.config.Write("output_folder", output_folder)
 
-    def on_select_voice(self, event):
-        self.selected_voice = event.GetString()
-        self.config.Write("selected_voice", self.selected_voice) # Save the selected voice
+    def on_select_wav(self, event):
+        with wx.FileDialog(self, "Select a .wav file", wildcard="WAV files (*.wav)|*.wav", style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as fileDialog:
+            if fileDialog.ShowModal() == wx.ID_CANCEL:
+                return
+            wav_path = fileDialog.GetPath()
+            self.selected_wav_path = wav_path
+            self.wav_path_label.SetLabel(os.path.basename(wav_path))
 
     def on_select_speed(self, event):
         speed = float(event.GetString())
@@ -805,8 +813,31 @@ class MainWindow(wx.Frame):
         return float(self.selected_speed)
 
     def on_preview_chapter(self, event):
-        # ChatterboxTTS preview not implemented in UI.
-        wx.MessageBox("Preview is not available for ChatterboxTTS.", "Preview Unavailable", style=wx.OK | wx.ICON_INFORMATION)
+        # Synthesize and play a preview (first 100 chars) using ChatterboxTTS and current prompt
+        text = self.text_area.GetValue()[:1000]
+        if not text.strip():
+            wx.MessageBox("No text to preview.", "Preview Unavailable", style=wx.OK | wx.ICON_INFORMATION)
+            return
+        try:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            cb_model = ChatterboxTTS.from_pretrained(device=device)
+            if self.selected_wav_path:
+                cb_model.prepare_conditionals(wav_fpath=self.selected_wav_path)
+            torch.manual_seed(12345)
+            wav = cb_model.generate(text)
+            # Save to temp file and play
+            with NamedTemporaryFile(suffix=".wav", delete=False) as tmpf:
+                ta.save(tmpf.name, wav, cb_model.sr)
+                tmpf.flush()
+                # Play using OS default player
+                if platform.system() == "Windows":
+                    os.startfile(tmpf.name)
+                elif platform.system() == "Darwin":
+                    subprocess.Popen(["afplay", tmpf.name])
+                else:
+                    subprocess.Popen(["aplay", tmpf.name])
+        except Exception as e:
+            wx.MessageBox(f"Preview failed: {e}", "Preview Error", style=wx.OK | wx.ICON_ERROR)
 
     def on_start(self, event):
         self.synthesis_in_progress = True
@@ -851,13 +882,14 @@ class MainWindow(wx.Frame):
         self.config.Write("output_folder", self.output_folder_text_ctrl.GetValue())
 
         regex_value = self.regex_text_ctrl.GetValue()
-        print('Starting Audiobook Synthesis', dict(file_path=file_path, voice=voice, pick_manually=False, speed=speed, book_year=getattr(self, 'book_year', '')))
+        print('Starting Audiobook Synthesis', dict(file_path=file_path, voice=voice, pick_manually=False, speed=speed, book_year=getattr(self, 'book_year', ''), audio_prompt_wav=self.selected_wav_path if self.selected_wav_path else None))
         self.core_thread = CoreThread(params=dict(
             file_path=file_path, voice=voice, pick_manually=False, speed=speed,
             book_year=getattr(self, 'book_year', ''),
             output_folder=self.output_folder_text_ctrl.GetValue(),
             selected_chapters=selected_chapters,
-            model=self.selected_model
+            model=self.selected_model,
+            audio_prompt_wav=self.selected_wav_path if self.selected_wav_path else None
         ))
         self.core_thread.start()
 

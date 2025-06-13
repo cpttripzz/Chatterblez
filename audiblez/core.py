@@ -119,7 +119,7 @@ def replace_preserve_case(text, old, new):
 
     return text
 def main(file_path, voice, pick_manually, speed, book_year='', output_folder='.',
-         max_chapters=None, max_sentences=None, selected_chapters=None, post_event=None, model="kokortts"):
+         max_chapters=None, max_sentences=None, selected_chapters=None, post_event=None, model="kokortts", audio_prompt_wav=None):
     if post_event: post_event('CORE_STARTED')
     IS_WINDOWS = sys.platform.startswith("win")
 
@@ -185,6 +185,11 @@ def main(file_path, voice, pick_manually, speed, book_year='', output_folder='.'
         from chatterbox.tts import ChatterboxTTS
         device = "cuda" if torch.cuda.is_available() else "cpu"
         cb_model = ChatterboxTTS.from_pretrained(device=device)
+
+        # If a custom audio prompt is provided, use it
+        if audio_prompt_wav:
+            AUDIO_PROMPT_PATH = audio_prompt_wav
+            cb_model.prepare_conditionals(wav_fpath=AUDIO_PROMPT_PATH)
         # You must set AUDIO_PROMPT_PATH to the correct path for your audio prompt
         # AUDIO_PROMPT_PATH = "audio_prompt.wav"  # <-- Set this to your actual prompt file
         # cb_model.prepare_conditionals(wav_fpath=AUDIO_PROMPT_PATH)
