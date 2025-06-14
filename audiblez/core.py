@@ -194,8 +194,7 @@ def main(file_path,pick_manually, speed, book_year='', output_folder='.',
     # AUDIO_PROMPT_PATH = "audio_prompt.wav"  # <-- Set this to your actual prompt file
     # cb_model.prepare_conditionals(wav_fpath=AUDIO_PROMPT_PATH)
 
-    silence = torch.zeros(int(24000 * 0.25))
-    audio_segments = []
+    chapter_wav_files = []
     nlp = spacy.load('xx_ent_wiki_sm')
     nlp.add_pipe('sentencizer')
     for i, chapter in enumerate(selected_chapters, start=1):
@@ -207,46 +206,52 @@ def main(file_path,pick_manually, speed, book_year='', output_folder='.',
             for line in lines
             if re.search(r'\w', line)
         )
-        if i == 1:
-            text = f'{title} – {creator}.\n\n' + text
+        bad_words = [
+            "mr.", "mrs.", "ms.", "dr."
+        ]
+        replacements = [
+            "Mister", "Misses", "Miss", "Doctor"
+        ]
+        text = replace_preserve_case(text, bad_words, replacements)
+        xhtml_file_name = re.sub(r'[\\/:*?"<>|]', '_', chapter.get_name()).replace(' ', '_').replace('.xhtml', '').replace('.html', '')
+        chapter_wav_path = Path(output_folder) / filename.replace(extension, f'_chapter_{i}_{xhtml_file_name}.wav')
+        chapter_wav_files.append(chapter_wav_path)
+        if Path(chapter_wav_path).exists():
+            print(f'File for chapter {i} already exists. Skipping')
+            stats.processed_chars += len(text)
+            if post_event and hasattr(chapter, "chapter_index"):
+                post_event('CORE_CHAPTER_FINISHED', chapter_index=chapter.chapter_index)
+            continue
         if len(text.strip()) < 10:
             print(f'Skipping empty chapter {i}')
+            chapter_wav_files.remove(chapter_wav_path)
             continue
+        if i == 1:
+            text = f'{title} – {creator}.\n\n' + text
+        start_time = time.time()
         if post_event and hasattr(chapter, "chapter_index"):
             post_event('CORE_CHAPTER_STARTED', chapter_index=chapter.chapter_index)
-        # Split text into <=1000 char chunks at sentence boundaries using spacy
+        audio_segments = gen_audio_segments(cb_model, text, speed, stats, post_event=post_event, max_sentences=max_sentences)
+        if audio_segments:
+            final_audio = np.concatenate(audio_segments)
+            soundfile.write(chapter_wav_path, final_audio, sample_rate)
+            end_time = time.time()
+            delta_seconds = end_time - start_time
+            chars_per_sec = len(text) / delta_seconds
+            print('Chapter written to', chapter_wav_path)
+            if post_event and hasattr(chapter, "chapter_index"):
+                post_event('CORE_CHAPTER_FINISHED', chapter_index=chapter.chapter_index)
+            print(f'Chapter {i} read in {delta_seconds:.2f} seconds ({chars_per_sec:.0f} characters per second)')
+        else:
+            print(f'Warning: No audio generated for chapter {i}')
+            chapter_wav_files.remove(chapter_wav_path)
 
-        doc = nlp(text)
-        sentences = [sent.text.strip() for sent in doc.sents if sent.text.strip()]
-        chunks = []
-        current_chunk = ""
-        for sent in sentences:
-            if len(current_chunk) + len(sent) + 1 > 1000:
-                if current_chunk:
-                    chunks.append(current_chunk.strip())
-                current_chunk = sent
-            else:
-                if current_chunk:
-                    current_chunk += " " + sent
-                else:
-                    current_chunk = sent
-        if current_chunk:
-            chunks.append(current_chunk.strip())
-
-        for chunk in chunks:
-            torch.manual_seed(12345)
-            wav = cb_model.generate(chunk)
-            audio_segments.append(wav)
-            audio_segments.append(silence.unsqueeze(0))
-        if post_event and hasattr(chapter, "chapter_index"):
-            post_event('CORE_CHAPTER_FINISHED', chapter_index=chapter.chapter_index)
-
-    if audio_segments:
-        final_audio = torch.cat(audio_segments, dim=1)
-        ta.save("test.wav", final_audio, cb_model.sr)
-        print('All chapters concatenated and written to test.wav')
-    else:
-        print("No audio segments generated.")
+    if not chapter_wav_files:
+        print("No audio chapters were generated. Cannot create audiobook.", file=sys.stderr)
+        if post_event:
+            post_event('CORE_ERROR', message="No audio chapters were generated.")
+        allow_sleep()
+        return
 
     if not chapter_wav_files:
         print("No audio chapters were generated. Cannot create audiobook.", file=sys.stderr)
@@ -265,6 +270,8 @@ def main(file_path,pick_manually, speed, book_year='', output_folder='.',
             print(f"Audiobook creation failed: {e}", file=sys.stderr)
             if post_event:
                 post_event('CORE_ERROR', message=str(e))
+    print('Ended at:', time.strftime('%H:%M:%S'))
+
     allow_sleep()
 
 
@@ -297,6 +304,25 @@ def print_selected_chapters(document_chapters, chapters):
         for i, c in enumerate(document_chapters, start=1)
     ], headers=['#', 'Chapter', 'Text Length', 'Selected', 'First words']))
 
+
+def gen_audio_segments(cb_model, text, speed, stats=None, max_sentences=None, post_event=None):
+    # Use spacy to split into sentences
+    nlp = spacy.load('xx_ent_wiki_sm')
+    nlp.add_pipe('sentencizer')
+    audio_segments = []
+    doc = nlp(text)
+    sentences = list(doc.sents)
+    for i, sent in enumerate(sentences):
+        if max_sentences and i > max_sentences: break
+        # ChatterboxTTS does not use speed param, but keep for compatibility
+        wav = cb_model.generate(sent.text)
+        audio_segments.append(wav.numpy().flatten())
+        if stats:
+            stats.processed_chars += len(sent.text)
+            stats.progress = stats.processed_chars * 100 // stats.total_chars
+            stats.eta = strfdelta((stats.total_chars - stats.processed_chars) / stats.chars_per_sec)
+            if post_event: post_event('CORE_PROGRESS', stats=stats)
+    return audio_segments
 def find_document_chapters_and_extract_texts(book):
     """Returns every chapter that is an ITEM_DOCUMENT and enriches each chapter with extracted_text."""
     document_chapters = []
