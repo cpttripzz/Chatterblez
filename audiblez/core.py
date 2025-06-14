@@ -184,6 +184,8 @@ def main(file_path,pick_manually, speed, book_year='', output_folder='.',
     import torchaudio as ta
     from chatterbox.tts import ChatterboxTTS
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f'running on device: {device}')
+    
     cb_model = ChatterboxTTS.from_pretrained(device=device)
 
     # If a custom audio prompt is provided, use it
