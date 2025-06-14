@@ -29,7 +29,49 @@ from pick import pick
 import threading
 import queue # Import queue for concurrent reading
 
+from functools import lru_cache
 sample_rate = 24000
+
+# ---------------------------------------------------------------------------
+# GLOBALS / SINGLETONS
+# ---------------------------------------------------------------------------
+allowed_chars_re = re.compile(r"[^’a-zA-Z0-9\s.,;:'\"!?()\[\]-]")
+
+@lru_cache(maxsize=1)
+def get_nlp():
+    """
+    Lightweight, cached spacy pipeline used only for sentence segmentation.
+    Falls back to full model if `spacy.blank` is not available for the
+    requested language.
+    """
+    try:
+        nlp = spacy.blank("xx")  # very small, language-agnostic
+    except Exception:            # Fallback – should basically never happen
+        load_spacy()
+        nlp = spacy.load("xx_ent_wiki_sm")
+    if "sentencizer" not in nlp.pipe_names:
+        nlp.add_pipe("sentencizer")
+    return nlp
+
+# ---------------------------------------------------------------------------
+# Helper for progress / ETA
+# ---------------------------------------------------------------------------
+def update_stats(stats, added_chars):
+    """
+    Update statistics (chars processed, speed, ETA) using an exponential
+    moving average to smooth the instantaneous chars/sec measurement. This
+    greatly improves the accuracy of the ETA that is reported to the user.
+    """
+    stats.processed_chars += added_chars
+    elapsed = time.perf_counter() - stats.start_time
+    if elapsed <= 0:
+        return
+    current_rate = stats.processed_chars / elapsed
+    alpha = 0.3  # smoothing factor
+    stats.chars_per_sec = alpha * current_rate + (1 - alpha) * stats.chars_per_sec
+    remaining_chars = max(stats.total_chars - stats.processed_chars, 0)
+    stats.eta = strfdelta(remaining_chars / stats.chars_per_sec) if stats.chars_per_sec else "?:??"
+    stats.progress = stats.processed_chars * 100 // stats.total_chars
 
 
 def load_spacy():
@@ -172,7 +214,11 @@ def main(file_path,pick_manually, speed, book_year='', output_folder='.',
     stats = SimpleNamespace(
         total_chars=sum(map(len, texts)),
         processed_chars=0,
-        chars_per_sec=500 if torch.cuda.is_available() else 50)
+        chars_per_sec=500 if torch.cuda.is_available() else 50,  # initial guess
+        start_time=time.perf_counter(),
+        eta='–',
+        progress=0
+    )
     print('Started at:', time.strftime('%H:%M:%S'))
     print(f'Total characters: {stats.total_chars:,}')
     print('Total words:', len(' '.join(texts).split()))
@@ -197,14 +243,13 @@ def main(file_path,pick_manually, speed, book_year='', output_folder='.',
     # cb_model.prepare_conditionals(wav_fpath=AUDIO_PROMPT_PATH)
 
     chapter_wav_files = []
-    nlp = spacy.load('xx_ent_wiki_sm')
-    nlp.add_pipe('sentencizer')
+    nlp = get_nlp()
     for i, chapter in enumerate(selected_chapters, start=1):
         if max_chapters and i > max_chapters: break
         allowed_chars = r"[^’a-zA-Z0-9\s.,;:'\"!?()\[\]-]"
         lines = chapter.extracted_text.splitlines()
         text = "\n".join(
-            re.sub(allowed_chars, '', line.replace('’', '\''))
+            allowed_chars_re.sub('', line.replace('’', '\''))
             for line in lines
             if re.search(r'\w', line)
         )
@@ -233,7 +278,15 @@ def main(file_path,pick_manually, speed, book_year='', output_folder='.',
         start_time = time.time()
         if post_event and hasattr(chapter, "chapter_index"):
             post_event('CORE_CHAPTER_STARTED', chapter_index=chapter.chapter_index)
-        audio_segments = gen_audio_segments(cb_model, text, speed, stats, post_event=post_event, max_sentences=max_sentences)
+        audio_segments = gen_audio_segments(
+            cb_model,
+            nlp,
+            text,
+            speed,
+            stats,
+            post_event=post_event,
+            max_sentences=max_sentences
+        )
         if audio_segments:
             final_audio = np.concatenate(audio_segments)
             soundfile.write(chapter_wav_path, final_audio, sample_rate)
@@ -307,10 +360,8 @@ def print_selected_chapters(document_chapters, chapters):
     ], headers=['#', 'Chapter', 'Text Length', 'Selected', 'First words']))
 
 
-def gen_audio_segments(cb_model, text, speed, stats=None, max_sentences=None, post_event=None):
-    # Use spacy to split into sentences
-    nlp = spacy.load('xx_ent_wiki_sm')
-    nlp.add_pipe('sentencizer')
+def gen_audio_segments(cb_model, nlp, text, speed, stats=None, max_sentences=None, post_event=None):    # Use spacy to split into sentences
+
     audio_segments = []
     doc = nlp(text)
     sentences = list(doc.sents)
@@ -320,10 +371,9 @@ def gen_audio_segments(cb_model, text, speed, stats=None, max_sentences=None, po
         wav = cb_model.generate(sent.text)
         audio_segments.append(wav.numpy().flatten())
         if stats:
-            stats.processed_chars += len(sent.text)
-            stats.progress = stats.processed_chars * 100 // stats.total_chars
-            stats.eta = strfdelta((stats.total_chars - stats.processed_chars) / stats.chars_per_sec)
-            if post_event: post_event('CORE_PROGRESS', stats=stats)
+            update_stats(stats, len(sent.text))
+            if post_event:
+                post_event('CORE_PROGRESS', stats=stats)
     return audio_segments
 def find_document_chapters_and_extract_texts(book):
     """Returns every chapter that is an ITEM_DOCUMENT and enriches each chapter with extracted_text."""
