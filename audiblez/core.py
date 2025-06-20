@@ -27,15 +27,17 @@ from bs4 import BeautifulSoup
 from ebooklib import epub
 from pick import pick
 import threading
-import queue # Import queue for concurrent reading
+import queue  # Import queue for concurrent reading
 
 from functools import lru_cache
+
 sample_rate = 24000
 
 # ---------------------------------------------------------------------------
 # GLOBALS / SINGLETONS
 # ---------------------------------------------------------------------------
 allowed_chars_re = re.compile(r"[^’a-zA-Z0-9\s.,;:'\"!?()\[\]-]")
+
 
 @lru_cache(maxsize=1)
 def get_nlp():
@@ -46,12 +48,13 @@ def get_nlp():
     """
     try:
         nlp = spacy.blank("xx")  # very small, language-agnostic
-    except Exception:            # Fallback – should basically never happen
+    except Exception:  # Fallback – should basically never happen
         load_spacy()
         nlp = spacy.load("xx_ent_wiki_sm")
     if "sentencizer" not in nlp.pipe_names:
         nlp.add_pipe("sentencizer")
     return nlp
+
 
 # ---------------------------------------------------------------------------
 # Helper for progress / ETA
@@ -78,14 +81,17 @@ def load_spacy():
     if not spacy.util.is_package("xx_ent_wiki_sm"):
         print("Downloading Spacy model xx_ent_wiki_sm...")
         spacy.cli.download("xx_ent_wiki_sm")
+
+
 import ctypes
 import time
 import threading
 
 # Constants from WinBase.h
-ES_CONTINUOUS       = 0x80000000
-ES_SYSTEM_REQUIRED  = 0x00000001
+ES_CONTINUOUS = 0x80000000
+ES_SYSTEM_REQUIRED = 0x00000001
 ES_DISPLAY_REQUIRED = 0x00000002
+
 
 # Set execution state to prevent sleep
 def prevent_sleep():
@@ -93,6 +99,7 @@ def prevent_sleep():
         ctypes.windll.kernel32.SetThreadExecutionState(
             ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED
         )
+
 
 # Reset execution state to allow sleep
 def allow_sleep():
@@ -122,7 +129,8 @@ def set_espeak_library():
             if paths:
                 library = paths[0]
             else:
-                raise RuntimeError("eSpeak NG library not found in default paths. Please set ESPEAK_LIBRARY environment variable.")
+                raise RuntimeError(
+                    "eSpeak NG library not found in default paths. Please set ESPEAK_LIBRARY environment variable.")
         else:
             print('Unsupported OS, please set the espeak library path manually')
             return
@@ -136,6 +144,8 @@ def set_espeak_library():
         print("On Mac: brew install espeak-ng")
         print("On Linux: sudo apt install espeak-ng")
         print("On Windows: Download from https://github.com/espeak-ng/espeak-ng/releases")
+
+
 def match_case(word, replacement):
     if word.isupper():
         return replacement.upper()
@@ -160,8 +170,10 @@ def replace_preserve_case(text, old, new):
         text = pattern.sub(repl, text)
 
     return text
-def main(file_path,pick_manually, speed, book_year='', output_folder='.',
-         max_chapters=None, max_sentences=None, selected_chapters=None, post_event=None,  audio_prompt_wav=None):
+
+
+def main(file_path, pick_manually, speed, book_year='', output_folder='.',
+         max_chapters=None, max_sentences=None, selected_chapters=None, post_event=None, audio_prompt_wav=None):
     if post_event: post_event('CORE_STARTED')
     IS_WINDOWS = sys.platform.startswith("win")
 
@@ -173,7 +185,7 @@ def main(file_path,pick_manually, speed, book_year='', output_folder='.',
 
     filename = Path(file_path).name
     extension = os.path.splitext(file_path)[1].lower()
-    print(f"extension {extension}");
+    print(f"extension {extension}")
     if extension == '.pdf':
         title = os.path.splitext(os.path.basename(file_path))[0]
         creator = "Unknown"
@@ -210,7 +222,6 @@ def main(file_path,pick_manually, speed, book_year='', output_folder='.',
         allow_sleep()
         return
 
-
     stats = SimpleNamespace(
         total_chars=sum(map(len, texts)),
         processed_chars=0,
@@ -226,12 +237,11 @@ def main(file_path,pick_manually, speed, book_year='', output_folder='.',
     print(f'Estimated time remaining (assuming {stats.chars_per_sec} chars/sec): {eta}')
     chapter_wav_files = []
 
-
     import torchaudio as ta
     from chatterbox.tts import ChatterboxTTS
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f'running on device: {device}')
-    
+
     cb_model = ChatterboxTTS.from_pretrained(device=device)
 
     # If a custom audio prompt is provided, use it
@@ -246,13 +256,21 @@ def main(file_path,pick_manually, speed, book_year='', output_folder='.',
     nlp = get_nlp()
     for i, chapter in enumerate(selected_chapters, start=1):
         if max_chapters and i > max_chapters: break
-        allowed_chars = r"[^’a-zA-Z0-9\s.,;:'\"!?()\[\]-]"
         lines = chapter.extracted_text.splitlines()
         text = "\n".join(
-            allowed_chars_re.sub('', line.replace('’', '\''))
+            cleaned_line
             for line in lines
-            if re.search(r'\w', line)
+            if (
+                cleaned_line := allowed_chars_re.sub(
+                    '',
+                    line.replace("“", '"')
+                    .replace("”", '"')
+                    .replace("‘", "'")
+                    .replace("’", "'")
+                )
+            ).strip() and re.search(r'\w', cleaned_line)
         )
+        print(f'Chapter {i}: {text}')
         bad_words = [
             "mr.", "mrs.", "ms.", "dr."
         ]
@@ -260,8 +278,10 @@ def main(file_path,pick_manually, speed, book_year='', output_folder='.',
             "Mister", "Misses", "Miss", "Doctor"
         ]
         text = replace_preserve_case(text, bad_words, replacements)
-        xhtml_file_name = re.sub(r'[\\/:*?"<>|]', '_', chapter.get_name()).replace(' ', '_').replace('.xhtml', '').replace('.html', '')
-        chapter_wav_path = Path(output_folder) / filename.replace(extension, f'_chapter_{i}_{xhtml_file_name}.wav')
+        xhtml_file_name = re.sub(r'[\\/:*?"<>|]', '_', chapter.get_name()).replace(' ', '_').replace('.xhtml',
+                                                                                                     '').replace(
+            '.html', '')
+        chapter_wav_path = Path(output_folder) / filename.replace(extension, f'_chapter_{xhtml_file_name}.wav')
         chapter_wav_files.append(chapter_wav_path)
         if Path(chapter_wav_path).exists():
             print(f'File for chapter {i} already exists. Skipping')
@@ -318,7 +338,8 @@ def main(file_path,pick_manually, speed, book_year='', output_folder='.',
     if has_ffmpeg:
         create_index_file(title, creator, chapter_wav_files, output_folder)
         try:
-            concat_file_path = concat_wavs_with_ffmpeg(chapter_wav_files, output_folder, filename, post_event=post_event)
+            concat_file_path = concat_wavs_with_ffmpeg(chapter_wav_files, output_folder, filename,
+                                                       post_event=post_event)
             create_m4b(concat_file_path, filename, book_year, cover_image, output_folder, post_event=post_event)
             if post_event: post_event('CORE_FINISHED')
         except RuntimeError as e:
@@ -360,7 +381,8 @@ def print_selected_chapters(document_chapters, chapters):
     ], headers=['#', 'Chapter', 'Text Length', 'Selected', 'First words']))
 
 
-def gen_audio_segments(cb_model, nlp, text, speed, stats=None, max_sentences=None, post_event=None):    # Use spacy to split into sentences
+def gen_audio_segments(cb_model, nlp, text, speed, stats=None, max_sentences=None,
+                       post_event=None):  # Use spacy to split into sentences
 
     audio_segments = []
     doc = nlp(text)
@@ -375,6 +397,8 @@ def gen_audio_segments(cb_model, nlp, text, speed, stats=None, max_sentences=Non
             if post_event:
                 post_event('CORE_PROGRESS', stats=stats)
     return audio_segments
+
+
 def find_document_chapters_and_extract_texts(book):
     """Returns every chapter that is an ITEM_DOCUMENT and enriches each chapter with extracted_text."""
     document_chapters = []
@@ -417,7 +441,8 @@ def find_good_chapters(document_chapters):
     chapters = [c for c in document_chapters if c.get_type() == ebooklib.ITEM_DOCUMENT and is_chapter(c)]
     if len(chapters) == 0:
         print('Not easy to recognize the chapters, defaulting to all non-empty documents.')
-        chapters = [c for c in document_chapters if c.get_type() == ebooklib.ITEM_DOCUMENT and len(c.extracted_text) > 10]
+        chapters = [c for c in document_chapters if
+                    c.get_type() == ebooklib.ITEM_DOCUMENT and len(c.extracted_text) > 10]
     return chapters
 
 
@@ -451,6 +476,7 @@ def enqueue_output(stream, queue_obj):
         queue_obj.put(line)
     stream.close()
 
+
 def concat_wavs_with_ffmpeg(chapter_files, output_folder, filename, post_event=None):
     base_filename_stem = Path(filename).stem
     wav_list_txt = Path(output_folder) / f"{base_filename_stem}_wav_list.txt"
@@ -479,7 +505,6 @@ def concat_wavs_with_ffmpeg(chapter_files, output_folder, filename, post_event=N
     total_duration_seconds = sum(probe_duration(wav_file) for wav_file in chapter_files if wav_file.exists())
     print(f"Concatenation Total Duration: {total_duration_seconds:.2f} seconds")
 
-
     process = subprocess.Popen(
         ffmpeg_concat_cmd,
         stdout=subprocess.PIPE,
@@ -502,17 +527,18 @@ def concat_wavs_with_ffmpeg(chapter_files, output_folder, filename, post_event=N
     # Drain initial STDERR output for a limited time or until queue is empty
     # This prevents blocking on large initial stderr bursts
     timeout_start = time.time()
-    while (t_stderr.is_alive() or not q_stderr.empty()) and (time.time() - timeout_start < 5): # DRAIN for max 5 seconds
+    while (t_stderr.is_alive() or not q_stderr.empty()) and (
+            time.time() - timeout_start < 5):  # DRAIN for max 5 seconds
         try:
             line = q_stderr.get_nowait().strip()
             if line:
                 initial_stderr_lines.append(line)
                 print(f"FFmpeg CONCAT Initial STDERR: {line}", file=sys.stderr)
         except queue.Empty:
-            time.sleep(0.01) # Small pause to yield CPU
+            time.sleep(0.01)  # Small pause to yield CPU
 
     current_time_seconds = 0.0
-    concat_error_output = initial_stderr_lines # Start collecting from here
+    concat_error_output = initial_stderr_lines  # Start collecting from here
 
     try:
         while process.poll() is None or not q_stdout.empty() or not q_stderr.empty():
@@ -530,7 +556,8 @@ def concat_wavs_with_ffmpeg(chapter_files, output_folder, filename, post_event=N
                             if total_duration_seconds > 0:
                                 progress = int((current_time_seconds / total_duration_seconds) * 100)
                                 if post_event:
-                                    stats_obj = SimpleNamespace(progress=progress, stage="concat", eta=strfdelta(total_duration_seconds - current_time_seconds))
+                                    stats_obj = SimpleNamespace(progress=progress, stage="concat", eta=strfdelta(
+                                        total_duration_seconds - current_time_seconds))
                                     post_event('CORE_PROGRESS', stats=stats_obj)
                                 # print(f"CONCAT Progress: {progress}% (Time: {current_time_seconds:.2f})") # More debugging
                         except ValueError:
@@ -550,13 +577,13 @@ def concat_wavs_with_ffmpeg(chapter_files, output_folder, filename, post_event=N
             except queue.Empty:
                 pass
 
-            time.sleep(0.001) # Small sleep to avoid busy-waiting
+            time.sleep(0.001)  # Small sleep to avoid busy-waiting
 
     finally:
         # Final drain of queues
         while not q_stdout.empty():
             line_stdout = q_stdout.get_nowait().strip()
-            if "=" in line_stdout: # Still try to process any last progress updates
+            if "=" in line_stdout:  # Still try to process any last progress updates
                 key, value = line_stdout.split("=", 1)
                 if key == "out_time":
                     try:
@@ -565,7 +592,8 @@ def concat_wavs_with_ffmpeg(chapter_files, output_folder, filename, post_event=N
                         if total_duration_seconds > 0:
                             progress = int((current_time_seconds / total_duration_seconds) * 100)
                             if post_event:
-                                stats_obj = SimpleNamespace(progress=progress, stage="concat", eta=strfdelta(total_duration_seconds - current_time_seconds))
+                                stats_obj = SimpleNamespace(progress=progress, stage="concat", eta=strfdelta(
+                                    total_duration_seconds - current_time_seconds))
                                 post_event('CORE_PROGRESS', stats=stats_obj)
                     except ValueError:
                         pass
@@ -580,7 +608,8 @@ def concat_wavs_with_ffmpeg(chapter_files, output_folder, filename, post_event=N
     Path(wav_list_txt).unlink()
 
     if process.returncode != 0:
-        error_message = f"FFmpeg concatenation failed with error code {process.returncode}.\nDetails:\n" + "\n".join(concat_error_output[-50:])
+        error_message = f"FFmpeg concatenation failed with error code {process.returncode}.\nDetails:\n" + "\n".join(
+            concat_error_output[-50:])
         print(error_message, file=sys.stderr)
         raise RuntimeError(error_message)
 
@@ -619,7 +648,6 @@ def create_m4b(concat_file_path, filename, book_year, cover_image, output_folder
         map_metadata_index = '1'
         map_chapters_index = '1'
 
-
     ffmpeg_command.extend([
         '-map', '0:a',
         '-c:a', 'aac',
@@ -627,13 +655,13 @@ def create_m4b(concat_file_path, filename, book_year, cover_image, output_folder
     ])
 
     if map_video_index:
-         ffmpeg_command.extend([
+        ffmpeg_command.extend([
             '-map', map_video_index,
             '-metadata:s:v', 'title="Album cover"',
             '-metadata:s:v', 'comment="Cover (front)"',
             '-disposition:v:0', 'attached_pic',
             '-c:v', 'copy'
-         ])
+        ])
 
     ffmpeg_command.extend([
         '-map_metadata', map_metadata_index,
@@ -646,9 +674,8 @@ def create_m4b(concat_file_path, filename, book_year, cover_image, output_folder
 
     print(f"Running FFmpeg command:\n{' '.join(ffmpeg_command)}\n")
 
-    total_duration_seconds = probe_duration(concat_file_path) # Changed to use Path object directly
+    total_duration_seconds = probe_duration(concat_file_path)  # Changed to use Path object directly
     print(f"M4B Conversion Total Duration: {total_duration_seconds:.2f} seconds")
-
 
     process = subprocess.Popen(
         ffmpeg_command,
@@ -671,7 +698,8 @@ def create_m4b(concat_file_path, filename, book_year, cover_image, output_folder
     initial_stderr_lines = []
     # Drain initial STDERR output for a limited time or until queue is empty
     timeout_start = time.time()
-    while (t_stderr.is_alive() or not q_stderr.empty()) and (time.time() - timeout_start < 5): # DRAIN for max 5 seconds
+    while (t_stderr.is_alive() or not q_stderr.empty()) and (
+            time.time() - timeout_start < 5):  # DRAIN for max 5 seconds
         try:
             line = q_stderr.get_nowait().strip()
             if line:
@@ -699,7 +727,8 @@ def create_m4b(concat_file_path, filename, book_year, cover_image, output_folder
                             if total_duration_seconds > 0:
                                 progress = int((current_time_seconds / total_duration_seconds) * 100)
                                 if post_event:
-                                    stats_obj = SimpleNamespace(progress=progress, stage="ffmpeg", eta=strfdelta(total_duration_seconds - current_time_seconds))
+                                    stats_obj = SimpleNamespace(progress=progress, stage="ffmpeg", eta=strfdelta(
+                                        total_duration_seconds - current_time_seconds))
                                     post_event('CORE_PROGRESS', stats=stats_obj)
                                 # print(f"M4B Progress: {progress}% (Time: {current_time_seconds:.2f})") # More debugging
                         except ValueError:
@@ -734,7 +763,8 @@ def create_m4b(concat_file_path, filename, book_year, cover_image, output_folder
                         if total_duration_seconds > 0:
                             progress = int((current_time_seconds / total_duration_seconds) * 100)
                             if post_event:
-                                stats_obj = SimpleNamespace(progress=progress, stage="ffmpeg", eta=strfdelta(total_duration_seconds - current_time_seconds))
+                                stats_obj = SimpleNamespace(progress=progress, stage="ffmpeg", eta=strfdelta(
+                                    total_duration_seconds - current_time_seconds))
                                 post_event('CORE_PROGRESS', stats=stats_obj)
                     except ValueError:
                         pass
@@ -750,7 +780,8 @@ def create_m4b(concat_file_path, filename, book_year, cover_image, output_folder
     if process.returncode == 0:
         print(f'{final_filename} created. Enjoy your audiobook.')
     else:
-        error_message = f"FFmpeg process exited with error code {process.returncode}.\nDetails:\n" + "\n".join(ffmpeg_error_output[-50:])
+        error_message = f"FFmpeg process exited with error code {process.returncode}.\nDetails:\n" + "\n".join(
+            ffmpeg_error_output[-50:])
         print(error_message, file=sys.stderr)
         raise RuntimeError(error_message)
 
@@ -761,7 +792,8 @@ def probe_duration(file_name):
         print(f"Warning: File not found for ffprobe duration: {file_name}", file=sys.stderr)
         return 0.0
 
-    args = ['ffprobe', '-i', str(file_name), '-show_entries', 'format=duration', '-v', 'quiet', '-of', 'default=noprint_wrappers=1:nokey=1']
+    args = ['ffprobe', '-i', str(file_name), '-show_entries', 'format=duration', '-v', 'quiet', '-of',
+            'default=noprint_wrappers=1:nokey=1']
     try:
         # Using CREATE_NO_WINDOW on Windows to prevent console flashing for ffprobe
         creation_flags = subprocess.CREATE_NO_WINDOW if platform.system() == "Windows" else 0
@@ -771,13 +803,13 @@ def probe_duration(file_name):
     except subprocess.CalledProcessError as e:
         print(f"Error probing duration for {file_name}: {e.stderr}", file=sys.stderr)
         return 0.0
-    except ValueError: # Occurs if stdout is not a float (e.g., empty or error message)
+    except ValueError:  # Occurs if stdout is not a float (e.g., empty or error message)
         print(f"Could not parse duration from ffprobe output for {file_name}: '{proc.stdout.strip()}'", file=sys.stderr)
         return 0.0
 
 
 def create_index_file(title, creator, chapter_mp3_files, output_folder):
-    with open(Path(output_folder) / "chapters.txt", "w",  encoding="ascii", newline="\n") as f:
+    with open(Path(output_folder) / "chapters.txt", "w", encoding="ascii", newline="\n") as f:
         f.write(f";FFMETADATA1\ntitle={title}\nartist={creator}\n\n")
         start = 0
         i = 0

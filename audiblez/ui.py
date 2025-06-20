@@ -813,9 +813,25 @@ class MainWindow(wx.Frame):
     def get_selected_speed(self):
         return float(self.selected_speed)
 
+
+    def normalize_smart_quotes(text):
+        return (
+            text
+            .replace("“", '"')
+            .replace("”", '"')
+            .replace("‘", "'")
+            .replace("’", "'")
+        )
+
+
     def on_preview_chapter(self, event):
         # Synthesize and play a preview (first 1000 chars) using ChatterboxTTS and current prompt, chunked for responsiveness
-        text = self.text_area.GetValue()[:1000]
+
+        text = "\n".join(
+            cleaned_line
+            for line in self.text_area.GetValue()[:1000]
+            if (cleaned_line := core.allowed_chars_re.sub('', line)).strip() and re.search(r'\w', cleaned_line)
+        )
         if not text.strip():
             wx.MessageBox("No text to preview.", "Preview Unavailable", style=wx.OK | wx.ICON_INFORMATION)
             return
