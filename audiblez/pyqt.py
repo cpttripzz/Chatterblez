@@ -10,10 +10,12 @@ import re
 import subprocess
 import sys
 import threading
+import PyPDF2
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSettings
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, QSettings
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QApplication,
@@ -70,6 +72,10 @@ class CoreThread(QThread):
             print("CoreThread exception:", exc)
             self.error.emit(str(exc))
 
+
+
+# Move open_file_dialog back to MainWindow
+    # ----------------- Menu slots -----------------
 class MainWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -93,7 +99,10 @@ class MainWindow(QMainWindow):
         if output_folder:
             self.output_dir_edit.setText(output_folder)
 
+        # ----------------- UI BUILD -----------------
+
     def _build_ui(self):
+        # Menu
         open_action = QAction("&Open", self)
         open_action.setShortcut("Ctrl+O")
         open_action.triggered.connect(self.open_file_dialog)
@@ -106,11 +115,13 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(exit_action)
 
+        # Settings menu
         settings_action = QAction("&Settings", self)
         settings_action.triggered.connect(self.open_settings_dialog)
         settings_menu = menubar.addMenu("&Settings")
         settings_menu.addAction(settings_action)
 
+        # Central widget
         central = QWidget(self)
         self.setCentralWidget(central)
         central_layout = QVBoxLayout(central)
@@ -118,40 +129,50 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         central_layout.addWidget(splitter)
 
+        # Left pane – chapters list with select/unselect all buttons
         chapter_panel = QWidget()
         chapter_layout = QVBoxLayout(chapter_panel)
+        # Buttons
         select_all_btn = QPushButton("Select All")
         unselect_all_btn = QPushButton("Unselect All")
         chapter_layout.addWidget(select_all_btn)
         chapter_layout.addWidget(unselect_all_btn)
+        # Chapter list
         self.chapter_list = QListWidget()
         self.chapter_list.itemSelectionChanged.connect(self.on_chapter_selected)
         chapter_layout.addWidget(self.chapter_list)
         splitter.addWidget(chapter_panel)
+        # Connect buttons
         select_all_btn.clicked.connect(self.select_all_chapters)
         unselect_all_btn.clicked.connect(self.unselect_all_chapters)
 
+        # Right pane
         right_container = QWidget()
         splitter.addWidget(right_container)
         right_layout = QVBoxLayout(right_container)
 
+        # Text edit
         self.text_edit = QTextEdit()
         right_layout.addWidget(self.text_edit)
 
+        # Controls pane
         controls = QWidget()
         right_layout.addWidget(controls)
         controls_layout = QHBoxLayout(controls)
 
+        # Preview button (replaces Speed)
         self.preview_btn = QPushButton("Preview")
         self.preview_btn.clicked.connect(self.handle_preview_button)
         controls_layout.addWidget(self.preview_btn)
         self.preview_thread = None
         self.preview_stop_flag = threading.Event()
 
+        # WAV button
         self.wav_button = QPushButton("Select Voice WAV")
         self.wav_button.clicked.connect(self.select_wav)
         controls_layout.addWidget(self.wav_button)
 
+        # Output dir
         self.output_dir_edit = QLineEdit(os.path.abspath("."))
         self.output_dir_edit.setReadOnly(True)
         controls_layout.addWidget(self.output_dir_edit)
@@ -161,15 +182,23 @@ class MainWindow(QMainWindow):
 
         controls_layout.addStretch()
 
+        # Start button
         self.start_btn = QPushButton("Start Synthesis")
         self.start_btn.clicked.connect(self.start_synthesis)
         controls_layout.addWidget(self.start_btn)
 
+        # Progress bar
         self.progress_bar = QProgressBar()
         self.progress_bar.setMaximum(100)
         right_layout.addWidget(self.progress_bar)
 
+        # Time/ETA label
+        self.time_label = QLabel("Elapsed: 00:00 | ETA: --:--")
+        right_layout.addWidget(self.time_label)
+
         splitter.setSizes([300, 900])
+
+        # ----------------- Settings Dialog -----------------
 
     def open_settings_dialog(self):
         dlg = SettingsDialog(self)
@@ -185,6 +214,7 @@ class MainWindow(QMainWindow):
         if file_path:
             self.load_ebook(Path(file_path))
 
+    # ----------------- Load e-book -----------------
     def load_ebook(self, file_path: Path):
         self.selected_file_path = str(file_path)
         ext = file_path.suffix.lower()
@@ -236,6 +266,7 @@ class MainWindow(QMainWindow):
             item.setCheckState(Qt.CheckState.Checked)
             self.chapter_list.addItem(item)
 
+    # ----------------- UI callbacks -----------------
     def select_all_chapters(self):
         for i in range(self.chapter_list.count()):
             item = self.chapter_list.item(i)
@@ -257,9 +288,11 @@ class MainWindow(QMainWindow):
 
     def handle_preview_button(self):
         if self.preview_thread and self.preview_thread.is_alive():
+            # Stop preview
             self.preview_stop_flag.set()
             self.preview_btn.setText("Preview")
         else:
+            # Start preview
             self.preview_stop_flag.clear()
             self.preview_btn.setText("Stop Preview")
             self.preview_thread = threading.Thread(target=self.preview_chapter_thread)
@@ -280,6 +313,7 @@ class MainWindow(QMainWindow):
                 return
             chapter = self.document_chapters[row]
             text = chapter.extracted_text[:1000]
+            # Clean text: remove disallowed chars, keep only lines with words
             cleaned_lines = []
             for line in text.splitlines():
                 cleaned_line = core.allowed_chars_re.sub('', line)
@@ -309,6 +343,7 @@ class MainWindow(QMainWindow):
                     import torchaudio as ta
                     ta.save(tmpf.name, wav, cb_model.sr)
                     tmpf.flush()
+                    # Play using OS default player
                     if self.preview_stop_flag.is_set():
                         break
                     if platform.system() == "Windows":
@@ -330,14 +365,17 @@ class MainWindow(QMainWindow):
         if wav_path:
             self.selected_wav_path = wav_path
             self.wav_button.setText(Path(wav_path).name)
+            # Save to persistent settings
             self.settings.setValue("selected_wav_path", wav_path)
 
     def select_output_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Select output folder")
         if folder:
             self.output_dir_edit.setText(folder)
+            # Save to persistent settings
             self.settings.setValue("output_folder", folder)
 
+    # ----------------- Core interaction -----------------
     def start_synthesis(self):
         print("Start synthesis clicked")
         if not self.selected_file_path:
@@ -345,6 +383,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No file", "Please open an e-book first")
             return
 
+        # update chapter selection flags
         for i, chap in enumerate(self.document_chapters):
             item = self.chapter_list.item(i)
             chap.is_selected = item.checkState() == Qt.CheckState.Checked
@@ -377,11 +416,25 @@ class MainWindow(QMainWindow):
         self.core_thread.error.connect(self.on_core_error)
         self.core_thread.start()
 
+    # ----------------- Slots connected to CoreThread signals -----------------
     def on_core_started(self):
         self.progress_bar.setValue(0)
+        self.start_time = time.time()
+        self.time_label.setText("Elapsed: 00:00 | ETA: --:--")
+        self.time_label.show()
 
     def on_core_progress(self, stats: SimpleNamespace):
         self.progress_bar.setValue(int(stats.progress))
+        # Update elapsed time and ETA
+        if hasattr(self, "start_time"):
+            elapsed = int(time.time() - self.start_time)
+            elapsed_min = elapsed // 60
+            elapsed_sec = elapsed % 60
+            elapsed_str = f"{elapsed_min:02d}:{elapsed_sec:02d}"
+        else:
+            elapsed_str = "00:00"
+        eta_str = getattr(stats, "eta", "--:--")
+        self.time_label.setText(f"Elapsed: {elapsed_str} | ETA: {eta_str}")
 
     def on_core_chapter_started(self, idx: int):
         if 0 <= idx < self.chapter_list.count():
@@ -397,7 +450,9 @@ class MainWindow(QMainWindow):
     def on_core_finished(self):
         self.progress_bar.setValue(100)
         self.start_btn.setEnabled(True)
+        self.time_label.setText("Elapsed: 00:00 | ETA: --:--")
         QMessageBox.information(self, "Done", "Audiobook synthesis completed")
+        # open output folder
         out_dir = self.output_dir_edit.text()
         if platform.system() == "Windows":
             os.startfile(out_dir)
