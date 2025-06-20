@@ -155,9 +155,11 @@ class MainWindow(QMainWindow):
         controls_layout = QHBoxLayout(controls)
 
         # Preview button (replaces Speed)
-        preview_btn = QPushButton("Preview")
-        preview_btn.clicked.connect(self.preview_chapter)
-        controls_layout.addWidget(preview_btn)
+        self.preview_btn = QPushButton("Preview")
+        self.preview_btn.clicked.connect(self.handle_preview_button)
+        controls_layout.addWidget(self.preview_btn)
+        self.preview_thread = None
+        self.preview_stop_flag = threading.Event()
 
         # WAV button
         self.wav_button = QPushButton("Select Voice WAV")
@@ -282,8 +284,19 @@ class MainWindow(QMainWindow):
     #     except ValueError:
     #         self.selected_speed = 1.0
 
-    def preview_chapter(self):
-        # Preview the current chapter (first 1000 chars) using ChatterboxTTS and current prompt
+    def handle_preview_button(self):
+        if self.preview_thread and self.preview_thread.is_alive():
+            # Stop preview
+            self.preview_stop_flag.set()
+            self.preview_btn.setText("Preview")
+        else:
+            # Start preview
+            self.preview_stop_flag.clear()
+            self.preview_btn.setText("Stop Preview")
+            self.preview_thread = threading.Thread(target=self.preview_chapter_thread)
+            self.preview_thread.start()
+
+    def preview_chapter_thread(self):
         try:
             from tempfile import NamedTemporaryFile
             import torch
@@ -292,7 +305,9 @@ class MainWindow(QMainWindow):
 
             row = self.chapter_list.currentRow()
             if not (0 <= row < len(self.document_chapters)):
+                print("Preview Unavailable: No chapter selected.")
                 QMessageBox.information(self, "Preview Unavailable", "No chapter selected.")
+                self.preview_btn.setText("Preview")
                 return
             chapter = self.document_chapters[row]
             text = chapter.extracted_text[:1000]
@@ -304,7 +319,9 @@ class MainWindow(QMainWindow):
                     cleaned_lines.append(cleaned_line)
             text = "\n".join(cleaned_lines)
             if not text.strip():
+                print("Preview Unavailable: No text to preview.")
                 QMessageBox.information(self, "Preview Unavailable", "No text to preview.")
+                self.preview_btn.setText("Preview")
                 return
 
             device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -312,19 +329,21 @@ class MainWindow(QMainWindow):
             if self.selected_wav_path:
                 cb_model.prepare_conditionals(wav_fpath=self.selected_wav_path)
             torch.manual_seed(12345)
-            # Split into sentences or ~50 char chunks for responsiveness
-            import re
             sentences = re.split(r'(?<=[.!?])\s+', text)
             chunks = [sent.strip() for sent in sentences if sent.strip()]
             if not chunks:
                 chunks = [text[i:i+50] for i in range(0, len(text), 50)]
             for chunk in chunks:
+                if self.preview_stop_flag.is_set():
+                    break
                 wav = cb_model.generate(chunk)
                 with NamedTemporaryFile(suffix=".wav", delete=False) as tmpf:
                     import torchaudio as ta
                     ta.save(tmpf.name, wav, cb_model.sr)
                     tmpf.flush()
                     # Play using OS default player
+                    if self.preview_stop_flag.is_set():
+                        break
                     if platform.system() == "Windows":
                         os.startfile(tmpf.name)
                     elif platform.system() == "Darwin":
@@ -332,7 +351,10 @@ class MainWindow(QMainWindow):
                     else:
                         subprocess.Popen(["aplay", tmpf.name])
         except Exception as e:
+            print(f"Preview Error: {e}")
             QMessageBox.critical(self, "Preview Error", f"Preview failed: {e}")
+        finally:
+            self.preview_btn.setText("Preview")
 
     def select_wav(self):
         wav_path, _ = QFileDialog.getOpenFileName(
@@ -421,6 +443,7 @@ class MainWindow(QMainWindow):
 
     def on_core_error(self, message: str):
         self.start_btn.setEnabled(True)
+        print(f"Error: {message}")
         QMessageBox.critical(self, "Error", message)
 
 
