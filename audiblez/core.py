@@ -173,7 +173,34 @@ def replace_preserve_case(text, old, new):
 
 
 def main(file_path, pick_manually, speed, book_year='', output_folder='.',
-         max_chapters=None, max_sentences=None, selected_chapters=None, post_event=None, audio_prompt_wav=None):
+         max_chapters=None, max_sentences=None, selected_chapters=None, post_event=None, audio_prompt_wav=None, batch_files=None, ignore_list=None):
+    """
+    Main entry point for audiobook synthesis.
+    - ignore_list: list of chapter names to ignore (case-insensitive substring match)
+    - batch_files: if provided, a list of file paths to process sequentially
+    """
+    if batch_files is not None:
+        # Sequentially process each file in batch_files
+        for batch_file in batch_files:
+            # Call main for each file, passing ignore_list and other params
+            main(
+                file_path=batch_file,
+                pick_manually=pick_manually,
+                speed=speed,
+                book_year=book_year,
+                output_folder=output_folder,
+                max_chapters=max_chapters,
+                max_sentences=max_sentences,
+                selected_chapters=None,
+                post_event=post_event,
+                audio_prompt_wav=audio_prompt_wav,
+                batch_files=None,  # Prevent infinite recursion
+                ignore_list=ignore_list
+            )
+            if post_event:
+                post_event('CORE_FILE_FINISHED', file_path=batch_file)
+        return
+
     if post_event: post_event('CORE_STARTED')
     IS_WINDOWS = sys.platform.startswith("win")
 
@@ -211,6 +238,17 @@ def main(file_path, pick_manually, speed, book_year='', output_folder='.',
                 selected_chapters = find_good_chapters(document_chapters)
     if selected_chapters is None:
         selected_chapters = document_chapters
+
+    # Filter chapters based on ignore_list
+    if ignore_list:
+        def should_include(chapter):
+            name = chapter.get_name().lower()
+            for ignore in ignore_list:
+                if ignore.lower() in name:
+                    return False
+            return True
+        selected_chapters = [c for c in selected_chapters if should_include(c)]
+
     print_selected_chapters(document_chapters, selected_chapters)
     texts = [c.extracted_text for c in selected_chapters]
 

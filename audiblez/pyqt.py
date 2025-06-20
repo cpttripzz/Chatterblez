@@ -304,6 +304,8 @@ class MainWindow(QMainWindow):
                     fileinfo.update({k: v for k, v in saved_map[fileinfo["path"]].items() if k in ("title", "year")})
         except Exception:
             pass
+        # Set self.batch_files so it is available in start_synthesis
+        self.batch_files = batch_files
         # Show batch panel
         self.show_batch_panel(batch_files)
 
@@ -497,9 +499,12 @@ class MainWindow(QMainWindow):
                             buffer = ""
                             idx += 1
                 # Filter chapters
-                filtered_chapters = [c for c in chapters if c.get_name() not in ignore_list]
+                filtered_chapters = [
+                    c for c in chapters
+                    if not any(ignore in c.get_name() for ignore in ignore_list)
+                ]
                 print(f"Starting Audiobook Synthesis (batch) for {file_path} with {len(filtered_chapters)} chapters (ignored: {ignore_list})")
-                core_thread = CoreThread(params=dict(
+                core_thread = CoreThread(
                     file_path=file_path,
                     pick_manually=False,
                     speed=1.0,
@@ -507,9 +512,9 @@ class MainWindow(QMainWindow):
                     output_folder=self.output_dir_edit.text(),
                     selected_chapters=filtered_chapters,
                     audio_prompt_wav=self.selected_wav_path if self.selected_wav_path else None
-                ))
+                )
                 core_thread.start()
-                core_thread.join()
+                core_thread.wait()
             return
 
         if not selected_chapters:
@@ -519,7 +524,17 @@ class MainWindow(QMainWindow):
 
         self.start_btn.setEnabled(False)
 
-        params = dict(
+        print("Starting CoreThread with params:", dict(
+            file_path=self.selected_file_path,
+            pick_manually=False,
+            speed=1.0,
+            book_year=self.book_year,
+            output_folder=self.output_dir_edit.text(),
+            selected_chapters=selected_chapters,
+            audio_prompt_wav=self.selected_wav_path,
+        ))
+
+        self.core_thread = CoreThread(
             file_path=self.selected_file_path,
             pick_manually=False,
             speed=1.0,
@@ -528,9 +543,6 @@ class MainWindow(QMainWindow):
             selected_chapters=selected_chapters,
             audio_prompt_wav=self.selected_wav_path,
         )
-        print("Starting CoreThread with params:", params)
-
-        self.core_thread = CoreThread(**params)
         self.core_thread.core_started.connect(self.on_core_started)
         self.core_thread.progress.connect(self.on_core_progress)
         self.core_thread.chapter_started.connect(self.on_core_chapter_started)

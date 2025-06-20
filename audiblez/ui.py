@@ -34,7 +34,8 @@ EVENTS = {
     'CORE_PROGRESS': NewEvent(),
     'CORE_CHAPTER_STARTED': NewEvent(),
     'CORE_CHAPTER_FINISHED': NewEvent(),
-    'CORE_FINISHED': NewEvent()
+    'CORE_FINISHED': NewEvent(),
+    'CORE_FILE_FINISHED': NewEvent()
 }
 
 border = 5
@@ -58,6 +59,7 @@ class MainWindow(wx.Frame):
         self.Bind(EVENTS['CORE_CHAPTER_FINISHED'][1], self.on_core_chapter_finished)
         self.Bind(EVENTS['CORE_PROGRESS'][1], self.on_core_progress)
         self.Bind(EVENTS['CORE_FINISHED'][1], self.on_core_finished)
+        self.Bind(EVENTS['CORE_FILE_FINISHED'][1], self.on_core_file_finished)
 
         self.config = wx.Config("Audiblez") # Create a config object
 
@@ -873,6 +875,11 @@ class MainWindow(wx.Frame):
         self.start_button.Disable()
         self.params_panel.Disable()
 
+        # Example: get ignore_list from a UI field or config (for now, hardcoded)
+        ignore_list = getattr(self, "ignore_list", None)
+        if ignore_list is None:
+            ignore_list = []  # Replace with actual UI/config value if available
+
         # Batch mode
         if hasattr(self, "batch_files") and self.batch_files:
             selected_files = [f["path"] for f in self.batch_files if f["selected"]]
@@ -881,18 +888,20 @@ class MainWindow(wx.Frame):
                 self.start_button.Enable()
                 self.params_panel.Enable()
                 return
-            for file_path in selected_files:
-                year = next((f["year"] for f in self.batch_files if f["path"] == file_path), '')
-                print('Starting Audiobook Synthesis (batch)', dict(file_path=file_path, pick_manually=False, speed=speed, book_year=year))
-                core_thread = CoreThread(params=dict(
-                    file_path=file_path, pick_manually=False, speed=speed,
-                    book_year=year,
-                    output_folder=self.output_folder_text_ctrl.GetValue(),
-                    selected_chapters=None,
-                    audio_prompt_wav=self.selected_wav_path if self.selected_wav_path else None
-                ))
-                core_thread.start()
-                core_thread.join()
+            # Call core.main ONCE with batch_files and ignore_list
+            print('Starting Audiobook Synthesis (batch)', dict(batch_files=selected_files, pick_manually=False, speed=speed))
+            self.core_thread = CoreThread(params=dict(
+                file_path=None,
+                pick_manually=False,
+                speed=speed,
+                book_year='',
+                output_folder=self.output_folder_text_ctrl.GetValue(),
+                selected_chapters=None,
+                audio_prompt_wav=self.selected_wav_path if self.selected_wav_path else None,
+                batch_files=selected_files,
+                ignore_list=ignore_list
+            ))
+            self.core_thread.start()
             return
 
         # Single file mode
@@ -915,7 +924,8 @@ class MainWindow(wx.Frame):
             book_year=getattr(self, 'book_year', ''),
             output_folder=self.output_folder_text_ctrl.GetValue(),
             selected_chapters=selected_chapters,
-            audio_prompt_wav=self.selected_wav_path if self.selected_wav_path else None
+            audio_prompt_wav=self.selected_wav_path if self.selected_wav_path else None,
+            ignore_list=ignore_list
         ))
         self.core_thread.start()
 
@@ -1120,6 +1130,20 @@ class CoreThread(threading.Thread):
         for k, v in kwargs.items():
             setattr(event_object, k, v)
         wx.PostEvent(wx.GetApp().GetTopWindow(), event_object)
+
+# --- New: handle CORE_FILE_FINISHED event to update batch table status ---
+    # In MainWindow:
+def on_core_file_finished(self, event):
+    # event.file_path is the completed file
+    if hasattr(self, "batch_files") and hasattr(self, "batch_table"):
+        for idx, fileinfo in enumerate(self.batch_files):
+            if fileinfo["path"] == getattr(event, "file_path", None):
+                self.batch_table.SetItem(idx, 1, os.path.basename(fileinfo["path"]))
+                self.batch_table.SetItem(idx, 0, '✔️')
+                self.batch_table.SetItem(idx, 2, fileinfo.get("year", ""))
+                self.batch_table.SetItem(idx, 3, fileinfo["path"])
+                self.batch_table.RefreshItem(idx)
+                break
 
 
 def main():
