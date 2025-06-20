@@ -20,6 +20,10 @@ from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QApplication,
     QFileDialog,
+    QTableWidget,
+    QTableWidgetItem,
+    QCheckBox,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -109,9 +113,14 @@ class MainWindow(QMainWindow):
         exit_action = QAction("&Exit", self)
         exit_action.setShortcut("Ctrl+Q")
         exit_action.triggered.connect(QApplication.instance().quit)
+        batch_action = QAction("&Batch Mode", self)
+        batch_action.setShortcut("Ctrl+B")
+        batch_action.triggered.connect(self.open_batch_mode)
         menubar = self.menuBar()
         file_menu = menubar.addMenu("&File")
         file_menu.addAction(open_action)
+        file_menu.addSeparator()
+        file_menu.addAction(batch_action)
         file_menu.addSeparator()
         file_menu.addAction(exit_action)
 
@@ -128,6 +137,7 @@ class MainWindow(QMainWindow):
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         central_layout.addWidget(splitter)
+        self.splitter = splitter  # For batch mode panel replacement
 
         # Left pane – chapters list with select/unselect all buttons
         chapter_panel = QWidget()
@@ -142,6 +152,7 @@ class MainWindow(QMainWindow):
         self.chapter_list.itemSelectionChanged.connect(self.on_chapter_selected)
         chapter_layout.addWidget(self.chapter_list)
         splitter.addWidget(chapter_panel)
+        self.left_panel = chapter_panel  # Store reference to left panel
         # Connect buttons
         select_all_btn.clicked.connect(self.select_all_chapters)
         unselect_all_btn.clicked.connect(self.unselect_all_chapters)
@@ -149,6 +160,7 @@ class MainWindow(QMainWindow):
         # Right pane
         right_container = QWidget()
         splitter.addWidget(right_container)
+        self.right_panel = right_container  # Store reference to right panel
         right_layout = QVBoxLayout(right_container)
 
         # Text edit
@@ -266,7 +278,67 @@ class MainWindow(QMainWindow):
             item.setCheckState(Qt.CheckState.Checked)
             self.chapter_list.addItem(item)
 
-    # ----------------- UI callbacks -----------------
+    # ----------------- Batch Mode -----------------
+    def open_batch_mode(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select folder with e-books")
+        if not folder:
+            return
+        supported_exts = [".epub", ".pdf"]
+        files = [
+            str(Path(folder) / f)
+            for f in os.listdir(folder)
+            if os.path.isfile(str(Path(folder) / f)) and os.path.splitext(f)[1].lower() in supported_exts
+        ]
+        if not files:
+            QMessageBox.information(self, "No Files", "No supported files (.epub, .pdf) found in the selected folder.")
+            return
+        batch_files = [{"path": f, "selected": True, "year": ""} for f in files]
+        # Try to load batch state from disk and merge
+        import json
+        try:
+            with open("batch_state.json", "r", encoding="utf-8") as f:
+                saved_batch = json.load(f)
+            saved_map = {item["path"]: item for item in saved_batch}
+            for fileinfo in batch_files:
+                if fileinfo["path"] in saved_map:
+                    fileinfo.update({k: v for k, v in saved_map[fileinfo["path"]].items() if k in ("title", "year")})
+        except Exception:
+            pass
+        # Show batch panel
+        self.show_batch_panel(batch_files)
+
+    def show_batch_panel(self, batch_files):
+        # Remove all widgets from splitter
+        for i in reversed(range(self.splitter.count())):
+            widget = self.splitter.widget(i)
+            self.splitter.widget(i).setParent(None)
+        # Create a vertical panel with batch table and controls
+        batch_panel = QWidget()
+        layout = QVBoxLayout(batch_panel)
+        batch_files_panel = BatchFilesPanel(batch_files, parent=self)
+        layout.addWidget(batch_files_panel)
+        # Controls panel (copied from right panel)
+        controls_panel = QWidget()
+        controls_layout = QVBoxLayout(controls_panel)
+        # No text edit in batch mode
+        # Controls row
+        controls_row = QWidget()
+        controls_row_layout = QHBoxLayout(controls_row)
+        controls_row_layout.addWidget(self.preview_btn)
+        controls_row_layout.addWidget(self.wav_button)
+        controls_row_layout.addWidget(self.output_dir_edit)
+        controls_row_layout.addWidget(self.start_btn)
+        controls_row_layout.addStretch()
+        controls_row_layout.addWidget(self.progress_bar)
+        controls_row_layout.addWidget(self.time_label)
+        controls_panel.setLayout(controls_layout)
+        controls_layout.addWidget(controls_row)
+        layout.addWidget(controls_panel)
+        self.splitter.addWidget(batch_panel)
+        self.splitter.setSizes([400, 800])
+        self.batch_panel = batch_panel
+
+# ----------------- UI callbacks -----------------
     def select_all_chapters(self):
         for i in range(self.chapter_list.count()):
             item = self.chapter_list.item(i)
@@ -375,10 +447,10 @@ class MainWindow(QMainWindow):
             # Save to persistent settings
             self.settings.setValue("output_folder", folder)
 
-    # ----------------- Core interaction -----------------
+
     def start_synthesis(self):
         print("Start synthesis clicked")
-        if not self.selected_file_path:
+        if not self.selected_file_path and not (hasattr(self, "batch_files") and self.batch_files):
             print("No file selected")
             QMessageBox.warning(self, "No file", "Please open an e-book first")
             return
@@ -389,6 +461,57 @@ class MainWindow(QMainWindow):
             chap.is_selected = item.checkState() == Qt.CheckState.Checked
 
         selected_chapters = [c for c in self.document_chapters if c.is_selected]
+        if hasattr(self, "batch_files") and self.batch_files:
+            selected_files = [f["path"] for f in self.batch_files if f["selected"]]
+            if not selected_files:
+                QMessageBox.information(self, "No Files", "No files selected for batch synthesis.")
+                self.start_btn.setEnabled(True)
+                return
+            # Get ignore list from settings
+            ignore_csv = self.settings.value("batch_ignore_chapter_names", "", type=str)
+            ignore_list = [name.strip() for name in ignore_csv.split(",") if name.strip()]
+            for file_path in selected_files:
+                ext = os.path.splitext(file_path)[1].lower()
+                chapters = []
+                if ext == ".epub":
+                    from ebooklib import epub
+                    book = epub.read_epub(file_path)
+                    chapters = core.find_document_chapters_and_extract_texts(book)
+                elif ext == ".pdf":
+                    import PyPDF2
+                    pdf_reader = PyPDF2.PdfReader(file_path)
+                    class PDFChapter:
+                        def __init__(self, name, text, idx):
+                            self._name = name
+                            self.extracted_text = text
+                            self.chapter_index = idx
+                            self.is_selected = True
+                        def get_name(self):
+                            return self._name
+                    buffer = ""
+                    idx = 0
+                    for i, page in enumerate(pdf_reader.pages):
+                        buffer += (page.extract_text() or "") + "\n"
+                        if len(buffer) >= 5000 or i == len(pdf_reader.pages) - 1:
+                            chapters.append(PDFChapter(f"Pages {idx + 1}-{i + 1}", buffer.strip(), idx))
+                            buffer = ""
+                            idx += 1
+                # Filter chapters
+                filtered_chapters = [c for c in chapters if c.get_name() not in ignore_list]
+                print(f"Starting Audiobook Synthesis (batch) for {file_path} with {len(filtered_chapters)} chapters (ignored: {ignore_list})")
+                core_thread = CoreThread(params=dict(
+                    file_path=file_path,
+                    pick_manually=False,
+                    speed=1.0,
+                    book_year="",
+                    output_folder=self.output_dir_edit.text(),
+                    selected_chapters=filtered_chapters,
+                    audio_prompt_wav=self.selected_wav_path if self.selected_wav_path else None
+                ))
+                core_thread.start()
+                core_thread.join()
+            return
+
         if not selected_chapters:
             print("No chapters selected")
             QMessageBox.warning(self, "No chapters", "No chapters selected")
@@ -416,7 +539,7 @@ class MainWindow(QMainWindow):
         self.core_thread.error.connect(self.on_core_error)
         self.core_thread.start()
 
-    # ----------------- Slots connected to CoreThread signals -----------------
+# ----------------- Slots connected to CoreThread signals -----------------
     def on_core_started(self):
         self.progress_bar.setValue(0)
         self.start_time = time.time()
@@ -491,6 +614,81 @@ class SettingsDialog(QDialog):
     def save_chapter_names(self, text):
         settings = QSettings("audiblez", "audiblez-pyqt")
         settings.setValue("batch_ignore_chapter_names", text)
+
+class BatchFilesPanel(QWidget):
+    def __init__(self, batch_files, parent=None):
+        super().__init__(parent)
+        self.parent = parent
+        self.batch_files = batch_files
+        self.selected_row = 0
+        layout = QVBoxLayout(self)
+
+        title = QLabel("Select files to include in batch synthesis:")
+        layout.addWidget(title)
+
+        # Table
+        self.table = QTableWidget(len(batch_files), 4)
+        self.table.setHorizontalHeaderLabels(["Included", "File Name", "File Path"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        for i, fileinfo in enumerate(batch_files):
+            # Checkbox
+            cb = QCheckBox()
+            cb.setChecked(fileinfo.get("selected", True))
+            cb.stateChanged.connect(lambda state, row=i: self.set_selected(row, state))
+            self.table.setCellWidget(i, 0, cb)
+            # File name
+            fname = os.path.basename(fileinfo["path"])
+            self.table.setItem(i, 1, QTableWidgetItem(fname))
+
+            # File path
+            self.table.setItem(i, 2, QTableWidgetItem(fileinfo["path"]))
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.selectRow(0)
+
+        layout.addWidget(self.table)
+
+        # Select All / Unselect All
+        btn_layout = QHBoxLayout()
+        select_all_btn = QPushButton("Select All")
+        unselect_all_btn = QPushButton("Unselect All")
+        select_all_btn.clicked.connect(self.select_all)
+        unselect_all_btn.clicked.connect(self.unselect_all)
+        btn_layout.addWidget(select_all_btn)
+        btn_layout.addWidget(unselect_all_btn)
+        layout.addLayout(btn_layout)
+
+    def set_selected(self, row, state):
+        self.batch_files[row]["selected"] = bool(state)
+
+
+    def on_selection_changed(self):
+        selected = self.table.currentRow()
+        self.selected_row = selected
+
+    def select_all(self):
+        for i in range(self.table.rowCount()):
+            cb = self.table.cellWidget(i, 0)
+            cb.setChecked(True)
+            self.batch_files[i]["selected"] = True
+
+    def unselect_all(self):
+        for i in range(self.table.rowCount()):
+            cb = self.table.cellWidget(i, 0)
+            cb.setChecked(False)
+            self.batch_files[i]["selected"] = False
+
+    def save_details(self):
+        # Save year/title to batch_state.json
+        import json
+        for i in range(self.table.rowCount()):
+            self.batch_files[i]["year"] = self.table.item(i, 2).text()
+        try:
+            with open("batch_state.json", "w", encoding="utf-8") as f:
+                json.dump(self.batch_files, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to save batch state: {e}")
+        else:
+            QMessageBox.information(self, "Saved", "Batch file details saved.")
 
 def main():
     app = QApplication(sys.argv)
