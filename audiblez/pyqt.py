@@ -204,6 +204,15 @@ class MainWindow(QMainWindow):
         self.progress_bar.setMaximum(100)
         right_layout.addWidget(self.progress_bar)
 
+        # Batch progress bar and label (hidden by default)
+        self.batch_progress_label = QLabel("Batch Progress:")
+        self.batch_progress_label.hide()
+        right_layout.addWidget(self.batch_progress_label)
+        self.batch_progress_bar = QProgressBar()
+        self.batch_progress_bar.setMaximum(100)
+        self.batch_progress_bar.hide()
+        right_layout.addWidget(self.batch_progress_bar)
+
         # Time/ETA label
         self.time_label = QLabel("Elapsed: 00:00 | ETA: --:--")
         right_layout.addWidget(self.time_label)
@@ -332,6 +341,8 @@ class MainWindow(QMainWindow):
         controls_row_layout.addWidget(self.start_btn)
         controls_row_layout.addStretch()
         controls_row_layout.addWidget(self.progress_bar)
+        controls_row_layout.addWidget(self.batch_progress_label)
+        controls_row_layout.addWidget(self.batch_progress_bar)
         controls_row_layout.addWidget(self.time_label)
         controls_panel.setLayout(controls_layout)
         controls_layout.addWidget(controls_row)
@@ -472,7 +483,18 @@ class MainWindow(QMainWindow):
             # Get ignore list from settings
             ignore_csv = self.settings.value("batch_ignore_chapter_names", "", type=str)
             ignore_list = [name.strip() for name in ignore_csv.split(",") if name.strip()]
+
+            # Batch progress bar and timer setup
+            self.batch_progress_label.setText(f"Batch Progress: 0 / {len(selected_files)}")
+            self.batch_progress_label.show()
+            self.batch_progress_bar.setMaximum(len(selected_files))
+            self.batch_progress_bar.setValue(0)
+            self.batch_progress_bar.show()
+            self.batch_start_time = time.time()
+            completed = 0
+
             for file_path in selected_files:
+                file_start_time = time.time()
                 ext = os.path.splitext(file_path)[1].lower()
                 chapters = []
                 if ext == ".epub":
@@ -504,6 +526,29 @@ class MainWindow(QMainWindow):
                     if not any(ignore in c.get_name() for ignore in ignore_list)
                 ]
                 print(f"Starting Audiobook Synthesis (batch) for {file_path} with {len(filtered_chapters)} chapters (ignored: {ignore_list})")
+
+                # Custom progress handler for per-file progress, updating batch elapsed/eta
+                def make_progress_handler(batch_completed, batch_total, batch_start_time):
+                    def handler(stats):
+                        now = time.time()
+                        elapsed = int(now - batch_start_time)
+                        elapsed_min = elapsed // 60
+                        elapsed_sec = elapsed % 60
+                        elapsed_str = f"{elapsed_min:02d}:{elapsed_sec:02d}"
+                        # Estimate ETA for batch
+                        done = batch_completed + stats.progress / 100.0
+                        if done > 0:
+                            total_est = elapsed / done
+                            eta = int(total_est * batch_total - elapsed)
+                            eta_min = eta // 60
+                            eta_sec = eta % 60
+                            eta_str = f"{eta_min:02d}:{eta_sec:02d}"
+                        else:
+                            eta_str = "--:--"
+                        self.time_label.setText(f"Batch Elapsed: {elapsed_str} | Batch ETA: {eta_str}")
+                        QApplication.processEvents()
+                    return handler
+
                 core_thread = CoreThread(
                     file_path=file_path,
                     pick_manually=False,
@@ -513,8 +558,34 @@ class MainWindow(QMainWindow):
                     selected_chapters=filtered_chapters,
                     audio_prompt_wav=self.selected_wav_path if self.selected_wav_path else None
                 )
+                # Connect progress to batch-aware handler
+                core_thread.progress.connect(
+                    make_progress_handler(completed, len(selected_files), self.batch_start_time)
+                )
                 core_thread.start()
                 core_thread.wait()
+                completed += 1
+                # Update batch progress and time after each file
+                now = time.time()
+                elapsed = int(now - self.batch_start_time)
+                elapsed_min = elapsed // 60
+                elapsed_sec = elapsed % 60
+                elapsed_str = f"{elapsed_min:02d}:{elapsed_sec:02d}"
+                if completed > 0:
+                    total_est = elapsed / completed
+                    eta = int(total_est * len(selected_files) - elapsed)
+                    eta_min = eta // 60
+                    eta_sec = eta % 60
+                    eta_str = f"{eta_min:02d}:{eta_sec:02d}"
+                else:
+                    eta_str = "--:--"
+                self.batch_progress_label.setText(f"Batch Progress: {completed} / {len(selected_files)}")
+                self.batch_progress_bar.setValue(completed)
+                self.time_label.setText(f"Batch Elapsed: {elapsed_str} | Batch ETA: {eta_str}")
+                QApplication.processEvents()
+            self.batch_progress_label.hide()
+            self.batch_progress_bar.hide()
+            self.time_label.setText("Elapsed: 00:00 | ETA: --:--")
             return
 
         if not selected_chapters:
@@ -585,8 +656,18 @@ class MainWindow(QMainWindow):
     def on_core_finished(self):
         self.progress_bar.setValue(100)
         self.start_btn.setEnabled(True)
+        # Delete all .wav files in the output folder
+        import glob
+        out_dir = self.output_dir_edit.text()
+        wav_files = glob.glob(os.path.join(out_dir, "*.wav"))
+        for wav_file in wav_files:
+            try:
+                os.remove(wav_file)
+            except Exception as e:
+                print(f"Failed to delete {wav_file}: {e}")
         self.time_label.setText("Elapsed: 00:00 | ETA: --:--")
         QMessageBox.information(self, "Done", "Audiobook synthesis completed")
+        
         # open output folder
         out_dir = self.output_dir_edit.text()
         if platform.system() == "Windows":
@@ -639,7 +720,7 @@ class BatchFilesPanel(QWidget):
         layout.addWidget(title)
 
         # Table
-        self.table = QTableWidget(len(batch_files), 4)
+        self.table = QTableWidget(len(batch_files), 3)
         self.table.setHorizontalHeaderLabels(["Included", "File Name", "File Path"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         for i, fileinfo in enumerate(batch_files):
