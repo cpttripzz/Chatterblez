@@ -523,8 +523,9 @@ class MainWindow(QMainWindow):
                 # Filter chapters
                 filtered_chapters = [
                     c for c in chapters
-                    if not any(ignore in c.get_name() for ignore in ignore_list)
+                    if not any(ignore.lower() in c.get_name().lower() for ignore in ignore_list)
                 ]
+
                 print(f"Starting Audiobook Synthesis (batch) for {file_path} with {len(filtered_chapters)} chapters (ignored: {ignore_list})")
 
                 # Custom progress handler for per-file progress, updating batch elapsed/eta
@@ -586,6 +587,7 @@ class MainWindow(QMainWindow):
             self.batch_progress_label.hide()
             self.batch_progress_bar.hide()
             self.time_label.setText("Elapsed: 00:00 | ETA: --:--")
+            self.on_core_finished()
             return
 
         if not selected_chapters:
@@ -656,26 +658,36 @@ class MainWindow(QMainWindow):
     def on_core_finished(self):
         self.progress_bar.setValue(100)
         self.start_btn.setEnabled(True)
-        # Delete all .wav files in the output folder
+        # Delete all .wav files in the output folder with extra debug output
         import glob
-        out_dir = self.output_dir_edit.text()
-        wav_files = glob.glob(os.path.join(out_dir, "*.wav"))
-        for wav_file in wav_files:
-            try:
-                os.remove(wav_file)
-            except Exception as e:
-                print(f"Failed to delete {wav_file}: {e}")
-        self.time_label.setText("Elapsed: 00:00 | ETA: --:--")
-        QMessageBox.information(self, "Done", "Audiobook synthesis completed")
-        
-        # open output folder
-        out_dir = self.output_dir_edit.text()
-        if platform.system() == "Windows":
-            os.startfile(out_dir)
-        elif platform.system() == "Darwin":
-            subprocess.Popen(["open", out_dir])
+        out_dir = os.path.abspath(self.output_dir_edit.text())
+        print(f"[DEBUG] Output directory: {out_dir}")
+        if not os.path.isdir(out_dir):
+            print(f"[DEBUG] Output directory does not exist: {out_dir}")
         else:
-            subprocess.Popen(["xdg-open", out_dir])
+            all_files = os.listdir(out_dir)
+            print(f"[DEBUG] Files in output directory before deletion: {all_files}")
+            wav_files = [os.path.join(out_dir, f) for f in all_files if f.lower().endswith('.wav')]
+            print(f"[DEBUG] .wav files to delete: {wav_files}")
+            for wav_file in wav_files:
+                try:
+                    os.remove(wav_file)
+                    print(f"[DEBUG] Deleted: {wav_file}")
+                except Exception as e:
+                    print(f"[DEBUG] Failed to delete {wav_file}: {e}")
+            all_files_after = os.listdir(out_dir)
+            print(f"[DEBUG] Files in output directory after deletion: {all_files_after}")
+        self.time_label.setText("Elapsed: 00:00 | ETA: --:--")
+        # open output folder
+        if os.path.isdir(out_dir):
+            if platform.system() == "Windows":
+                os.startfile(out_dir)
+            elif platform.system() == "Darwin":
+                subprocess.Popen(["open", out_dir])
+            else:
+                subprocess.Popen(["xdg-open", out_dir])
+        # Always show "All files completed" at the end
+        QMessageBox.information(self, "All files completed", "All files completed")
 
     def on_core_error(self, message: str):
         self.start_btn.setEnabled(True)
@@ -770,18 +782,6 @@ class BatchFilesPanel(QWidget):
             cb.setChecked(False)
             self.batch_files[i]["selected"] = False
 
-    def save_details(self):
-        # Save year/title to batch_state.json
-        import json
-        for i in range(self.table.rowCount()):
-            self.batch_files[i]["year"] = self.table.item(i, 2).text()
-        try:
-            with open("batch_state.json", "w", encoding="utf-8") as f:
-                json.dump(self.batch_files, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to save batch state: {e}")
-        else:
-            QMessageBox.information(self, "Saved", "Batch file details saved.")
 
 def main():
     app = QApplication(sys.argv)

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# audiblez - A program to convert e-books into audiobooks using
-# Kokoro-82M model for high-quality text-to-speech synthesis.
+# chatterblez - A program to convert e-books into audiobooks using
+# chatterbox-tts
+# by Zachary Erskine
 # by Claudio Santini 2025 - https://claudio.uk
 import os
 import sys
