@@ -230,6 +230,25 @@ def main(file_path, pick_manually, speed, book_year='', output_folder='.',
         cover_image = cover_maybe.get_content() if cover_maybe else b""
         if cover_maybe:
             print(f'Found cover image {cover_maybe.file_name} in {cover_maybe.media_type} format')
+            if False:
+                # Save cover image as "<book name>.<image extension>"
+                media_type = cover_maybe.media_type  # e.g., "image/jpeg"
+                ext_map = {
+                    "image/jpeg": ".jpg",
+                    "image/jpg": ".jpg",
+                    "image/png": ".png",
+                    "image/gif": ".gif",
+                    "image/bmp": ".bmp",
+                    "image/webp": ".webp"
+                }
+                ext = ext_map.get(media_type, ".img")
+                # Clean title for filename
+                safe_title = re.sub(r'[\\/:*?"<>|]', '_', title).strip() or "cover"
+                cover_filename = f"{safe_title}{ext}"
+                cover_path = Path(output_folder) / cover_filename
+                with open(cover_path, "wb") as f:
+                    f.write(cover_image)
+                print(f"Cover image saved as {cover_path}")
         document_chapters = find_document_chapters_and_extract_texts(book)
 
         if not selected_chapters:
