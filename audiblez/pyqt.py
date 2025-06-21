@@ -83,14 +83,13 @@ class CoreThread(QThread):
 class MainWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Audiblez – Audiobook Generator (PyQt6)")
+        self.setWindowTitle("Chatterblez – Audiobook Generator")
         self.resize(1200, 800)
 
-        self.settings = QSettings("audiblez", "audiblez-pyqt")
+        self.settings = QSettings("Chatterblez", "chatterblez-pyqt")
         self.document_chapters: list = []
         self.selected_file_path: str | None = None
         self.selected_wav_path: str | None = None
-        self.book_year: str = ""
         self.core_thread: CoreThread | None = None
 
         self._build_ui()
@@ -473,7 +472,21 @@ class MainWindow(QMainWindow):
             item = self.chapter_list.item(i)
             chap.is_selected = item.checkState() == Qt.CheckState.Checked
 
+        print(f"selected_file_path: {self.selected_file_path}")
+        print(f"selected_chapters: {selected_chapters if 'selected_chapters' in locals() else 'N/A'}")
+        print(f"selected_wav_path: {self.selected_wav_path}")
+        print(f"output_dir: {self.output_dir_edit.text()}")
+
+        print(f"document_chapters type: {type(self.document_chapters)}, length: {len(self.document_chapters)}")
+        for idx, chap in enumerate(self.document_chapters):
+            print(f"  [{idx}] type: {type(chap)}, repr: {repr(chap)}")
+
         selected_chapters = [c for c in self.document_chapters if c.is_selected]
+        print(f"selected_chapters (after build): {selected_chapters}, length: {len(selected_chapters)}")
+        if not selected_chapters:
+            print("No chapters selected after build. Aborting synthesis.")
+            QMessageBox.warning(self, "No chapters", "No chapters selected")
+            return
         if hasattr(self, "batch_files") and self.batch_files:
             selected_files = [f["path"] for f in self.batch_files if f["selected"]]
             if not selected_files:
@@ -484,6 +497,16 @@ class MainWindow(QMainWindow):
             ignore_csv = self.settings.value("batch_ignore_chapter_names", "", type=str)
             ignore_list = [name.strip() for name in ignore_csv.split(",") if name.strip()]
 
+            # Write equivalent CLI command for batch mode
+            self.write_cli_command(
+                batch_folder=os.path.dirname(selected_files[0]) if selected_files else "",
+                output_folder=self.output_dir_edit.text(),
+                filterlist=ignore_csv,
+                wav_path=self.selected_wav_path,
+                speed=1.0,
+                is_batch=True
+            )
+
             # Batch progress bar and timer setup
             self.batch_progress_label.setText(f"Batch Progress: 0 / {len(selected_files)}")
             self.batch_progress_label.show()
@@ -491,103 +514,18 @@ class MainWindow(QMainWindow):
             self.batch_progress_bar.setValue(0)
             self.batch_progress_bar.show()
             self.batch_start_time = time.time()
-            completed = 0
 
-            for file_path in selected_files:
-                file_start_time = time.time()
-                ext = os.path.splitext(file_path)[1].lower()
-                chapters = []
-                if ext == ".epub":
-                    from ebooklib import epub
-                    book = epub.read_epub(file_path)
-                    chapters = core.find_document_chapters_and_extract_texts(book)
-                elif ext == ".pdf":
-                    import PyPDF2
-                    pdf_reader = PyPDF2.PdfReader(file_path)
-                    class PDFChapter:
-                        def __init__(self, name, text, idx):
-                            self._name = name
-                            self.extracted_text = text
-                            self.chapter_index = idx
-                            self.is_selected = True
-                        def get_name(self):
-                            return self._name
-                    buffer = ""
-                    idx = 0
-                    for i, page in enumerate(pdf_reader.pages):
-                        buffer += (page.extract_text() or "") + "\n"
-                        if len(buffer) >= 5000 or i == len(pdf_reader.pages) - 1:
-                            chapters.append(PDFChapter(f"Pages {idx + 1}-{i + 1}", buffer.strip(), idx))
-                            buffer = ""
-                            idx += 1
-                # Filter chapters
-                filtered_chapters = [
-                    c for c in chapters
-                    if not any(ignore.lower() in c.get_name().lower() for ignore in ignore_list)
-                ]
-
-                print(f"Starting Audiobook Synthesis (batch) for {file_path} with {len(filtered_chapters)} chapters (ignored: {ignore_list})")
-
-                # Custom progress handler for per-file progress, updating batch elapsed/eta
-                def make_progress_handler(batch_completed, batch_total, batch_start_time):
-                    def handler(stats):
-                        now = time.time()
-                        elapsed = int(now - batch_start_time)
-                        elapsed_min = elapsed // 60
-                        elapsed_sec = elapsed % 60
-                        elapsed_str = f"{elapsed_min:02d}:{elapsed_sec:02d}"
-                        # Estimate ETA for batch
-                        done = batch_completed + stats.progress / 100.0
-                        if done > 0:
-                            total_est = elapsed / done
-                            eta = int(total_est * batch_total - elapsed)
-                            eta_min = eta // 60
-                            eta_sec = eta % 60
-                            eta_str = f"{eta_min:02d}:{eta_sec:02d}"
-                        else:
-                            eta_str = "--:--"
-                        self.time_label.setText(f"Batch Elapsed: {elapsed_str} | Batch ETA: {eta_str}")
-                        QApplication.processEvents()
-                    return handler
-
-                core_thread = CoreThread(
-                    file_path=file_path,
-                    pick_manually=False,
-                    speed=1.0,
-                    book_year="",
-                    output_folder=self.output_dir_edit.text(),
-                    selected_chapters=filtered_chapters,
-                    audio_prompt_wav=self.selected_wav_path if self.selected_wav_path else None
-                )
-                # Connect progress to batch-aware handler
-                core_thread.progress.connect(
-                    make_progress_handler(completed, len(selected_files), self.batch_start_time)
-                )
-                core_thread.start()
-                core_thread.wait()
-                completed += 1
-                # Update batch progress and time after each file
-                now = time.time()
-                elapsed = int(now - self.batch_start_time)
-                elapsed_min = elapsed // 60
-                elapsed_sec = elapsed % 60
-                elapsed_str = f"{elapsed_min:02d}:{elapsed_sec:02d}"
-                if completed > 0:
-                    total_est = elapsed / completed
-                    eta = int(total_est * len(selected_files) - elapsed)
-                    eta_min = eta // 60
-                    eta_sec = eta % 60
-                    eta_str = f"{eta_min:02d}:{eta_sec:02d}"
-                else:
-                    eta_str = "--:--"
-                self.batch_progress_label.setText(f"Batch Progress: {completed} / {len(selected_files)}")
-                self.batch_progress_bar.setValue(completed)
-                self.time_label.setText(f"Batch Elapsed: {elapsed_str} | Batch ETA: {eta_str}")
-                QApplication.processEvents()
-            self.batch_progress_label.hide()
-            self.batch_progress_bar.hide()
-            self.time_label.setText("Elapsed: 00:00 | ETA: --:--")
-            self.on_core_finished()
+            # Start batch worker thread
+            self.batch_worker = BatchWorker(
+                selected_files=selected_files,
+                output_dir=self.output_dir_edit.text(),
+                ignore_list=ignore_list,
+                wav_path=self.selected_wav_path
+            )
+            self.batch_worker.progress_update.connect(self.on_batch_progress_update)
+            self.batch_worker.chapter_progress.connect(self.on_core_progress)
+            self.batch_worker.finished.connect(self.on_batch_finished)
+            self.batch_worker.start()
             return
 
         if not selected_chapters:
@@ -597,32 +535,37 @@ class MainWindow(QMainWindow):
 
         self.start_btn.setEnabled(False)
 
-        print("Starting CoreThread with params:", dict(
+        # Write equivalent CLI command for single file mode
+        self.write_cli_command(
             file_path=self.selected_file_path,
-            pick_manually=False,
-            speed=1.0,
-            book_year=self.book_year,
             output_folder=self.output_dir_edit.text(),
-            selected_chapters=selected_chapters,
-            audio_prompt_wav=self.selected_wav_path,
-        ))
+            filterlist="",
+            wav_path=self.selected_wav_path,
+            speed=1.0,
+            is_batch=False
+        )
 
-        self.core_thread = CoreThread(
+        print("About to create CoreThread with params:")
+        params = dict(
             file_path=self.selected_file_path,
             pick_manually=False,
             speed=1.0,
-            book_year=self.book_year,
             output_folder=self.output_dir_edit.text(),
             selected_chapters=selected_chapters,
             audio_prompt_wav=self.selected_wav_path,
         )
-        self.core_thread.core_started.connect(self.on_core_started)
-        self.core_thread.progress.connect(self.on_core_progress)
-        self.core_thread.chapter_started.connect(self.on_core_chapter_started)
-        self.core_thread.chapter_finished.connect(self.on_core_chapter_finished)
-        self.core_thread.finished.connect(self.on_core_finished)
-        self.core_thread.error.connect(self.on_core_error)
-        self.core_thread.start()
+        print(params)
+        try:
+            self.core_thread = CoreThread(**params)
+            self.core_thread.core_started.connect(self.on_core_started)
+            self.core_thread.progress.connect(self.on_core_progress)
+            self.core_thread.chapter_started.connect(self.on_core_chapter_started)
+            self.core_thread.chapter_finished.connect(self.on_core_chapter_finished)
+            self.core_thread.finished.connect(self.on_core_finished)
+            self.core_thread.error.connect(self.on_core_error)
+            self.core_thread.start()
+        except Exception as e:
+            print(f"Exception during CoreThread creation/start: {e}")
 
 # ----------------- Slots connected to CoreThread signals -----------------
     def on_core_started(self):
@@ -694,6 +637,138 @@ class MainWindow(QMainWindow):
         print(f"Error: {message}")
         QMessageBox.critical(self, "Error", message)
 
+    def write_cli_command(self, file_path=None, batch_folder=None, output_folder=".", filterlist="", wav_path=None, speed=1.0, is_batch=False):
+        """
+        Write the equivalent CLI command to last_cli_command.txt in the working directory.
+        Returns the CLI command string.
+        """
+        def to_posix(path):
+            return path.replace("\\", "/") if isinstance(path, str) else path
+
+        cmd = ["python", "cli.py"]
+        if is_batch:
+            if batch_folder:
+                cmd += ["--batch", f'"{to_posix(batch_folder)}"']
+        else:
+            if file_path:
+                cmd += ["--file", f'"{to_posix(file_path)}"']
+        if output_folder:
+            cmd += ["--output", f'"{to_posix(output_folder)}"']
+        if filterlist:
+            cmd += ["--filterlist", f'"{filterlist}"']
+        if wav_path:
+            cmd += ["--wav", f'"{to_posix(wav_path)}"']
+        if speed and speed != 1.0:
+            cmd += ["--speed", str(speed)]
+        cli_command = " ".join(cmd)
+        print(f"cli_command: {cli_command}")
+        try:
+            with open("last_cli_command.txt", "w", encoding="utf-8") as f:
+                f.write(cli_command + "\n")
+        except Exception as e:
+            print(f"Failed to write CLI command: {e}")
+        return cli_command
+
+from PyQt6.QtCore import pyqtSignal
+
+class BatchWorker(QThread):
+    progress_update = pyqtSignal(int, int, str, str)  # completed, total, elapsed_str, eta_str
+    chapter_progress = pyqtSignal(object)  # stats object from core
+    finished = pyqtSignal()
+
+    def __init__(self, selected_files, output_dir, ignore_list, wav_path):
+        super().__init__()
+        self.selected_files = selected_files
+        self.output_dir = output_dir
+        self.ignore_list = ignore_list
+        self.wav_path = wav_path
+
+    def run(self):
+        import core
+        import time
+        completed = 0
+        total = len(self.selected_files)
+        batch_start_time = time.time()
+
+        def post_event(evt_name, **kwargs):
+            if evt_name == "CORE_PROGRESS":
+                stats = kwargs.get("stats")
+                self.chapter_progress.emit(stats)
+
+        for file_path in self.selected_files:
+            ext = os.path.splitext(file_path)[1].lower()
+            chapters = []
+            if ext == ".epub":
+                from ebooklib import epub
+                book = epub.read_epub(file_path)
+                chapters = core.find_document_chapters_and_extract_texts(book)
+            elif ext == ".pdf":
+                import PyPDF2
+                pdf_reader = PyPDF2.PdfReader(file_path)
+                class PDFChapter:
+                    def __init__(self, name, text, idx):
+                        self._name = name
+                        self.extracted_text = text
+                        self.chapter_index = idx
+                        self.is_selected = True
+                    def get_name(self):
+                        return self._name
+                buffer = ""
+                idx = 0
+                for i, page in enumerate(pdf_reader.pages):
+                    buffer += (page.extract_text() or "") + "\n"
+                    if len(buffer) >= 5000 or i == len(pdf_reader.pages) - 1:
+                        chapters.append(PDFChapter(f"Pages {idx + 1}-{i + 1}", buffer.strip(), idx))
+                        buffer = ""
+                        idx += 1
+            # Filter chapters
+            filtered_chapters = [
+                c for c in chapters
+                if not any(ignore.lower() in c.get_name().lower() for ignore in self.ignore_list)
+            ]
+            # Run core.main for this file
+            core.main(
+                file_path=file_path,
+                pick_manually=False,
+                speed=1.0,
+                output_folder=self.output_dir,
+                selected_chapters=filtered_chapters,
+                audio_prompt_wav=self.wav_path if self.wav_path else None,
+                post_event=post_event
+            )
+            completed += 1
+            now = time.time()
+            elapsed = int(now - batch_start_time)
+            elapsed_min = elapsed // 60
+            elapsed_sec = elapsed % 60
+            elapsed_str = f"{elapsed_min:02d}:{elapsed_sec:02d}"
+            if completed > 0:
+                total_est = elapsed / completed
+                eta = int(total_est * total - elapsed)
+                eta_min = eta // 60
+                eta_sec = eta % 60
+                eta_str = f"{eta_min:02d}:{eta_sec:02d}"
+            else:
+                eta_str = "--:--"
+            self.progress_update.emit(completed, total, elapsed_str, eta_str)
+        self.finished.emit()
+
+def on_batch_progress_update(self, completed, total, elapsed_str, eta_str):
+    self.batch_progress_label.setText(f"Batch Progress: {completed} / {total}")
+    self.batch_progress_bar.setValue(completed)
+    self.time_label.setText(f"Batch Elapsed: {elapsed_str} | Batch ETA: {eta_str}")
+    QApplication.processEvents()
+
+def on_batch_finished(self):
+    self.batch_progress_label.hide()
+    self.batch_progress_bar.hide()
+    self.time_label.setText("Elapsed: 00:00 | ETA: --:--")
+    self.on_core_finished()
+
+# Patch MainWindow to add batch progress handlers
+MainWindow.on_batch_progress_update = on_batch_progress_update
+MainWindow.on_batch_finished = on_batch_finished
+
 class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -706,7 +781,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(chapter_names_label)
         self.chapter_names_edit = QLineEdit()
         layout.addWidget(self.chapter_names_edit)
-        settings = QSettings("audiblez", "audiblez-pyqt")
+        settings = QSettings("chatterblez", "chatterblez-pyqt")
         value = settings.value("batch_ignore_chapter_names", "", type=str)
         self.chapter_names_edit.setText(value)
         self.chapter_names_edit.textChanged.connect(self.save_chapter_names)
@@ -717,7 +792,7 @@ class SettingsDialog(QDialog):
         btn_box.addWidget(ok_btn)
         layout.addLayout(btn_box)
     def save_chapter_names(self, text):
-        settings = QSettings("audiblez", "audiblez-pyqt")
+        settings = QSettings("chatterblez", "chatterblez-pyqt")
         settings.setValue("batch_ignore_chapter_names", text)
 
 class BatchFilesPanel(QWidget):
