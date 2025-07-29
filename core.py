@@ -250,7 +250,8 @@ def clean_line(line: str) -> str:
     line = space_re.sub(' ', line)                            # Collapse spaces
     return line.strip()
 def main(file_path, pick_manually, speed, book_year='', output_folder='.',
-         max_chapters=None, max_sentences=None, selected_chapters=None, post_event=None, audio_prompt_wav=None, batch_files=None, ignore_list=None, should_stop=None):
+         max_chapters=None, max_sentences=None, selected_chapters=None, post_event=None, audio_prompt_wav=None, batch_files=None, ignore_list=None, should_stop=None,
+         repetition_penalty=1.2, min_p=0.05, top_p=1.0, exaggeration=0.5, cfg_weight=0.5, temperature=0.8):
     """
     Main entry point for audiobook synthesis.
     - ignore_list: list of chapter names to ignore (case-insensitive substring match)
@@ -438,7 +439,13 @@ def main(file_path, pick_manually, speed, book_year='', output_folder='.',
             stats,
             post_event=post_event,
             max_sentences=max_sentences,
-            should_stop=should_stop
+            should_stop=should_stop,
+            repetition_penalty=repetition_penalty,
+            min_p=min_p,
+            top_p=top_p,
+            exaggeration=exaggeration,
+            cfg_weight=cfg_weight,
+            temperature=temperature
         )
         if should_stop():
             print("Synthesis interrupted by user (after audio_segments).")
@@ -526,7 +533,7 @@ def print_selected_chapters(document_chapters, chapters):
 
 
 def gen_audio_segments(cb_model, nlp, text, speed, stats=None, max_sentences=None,
-                       post_event=None, should_stop=None):  # Use spacy to split into sentences
+                       post_event=None, should_stop=None, repetition_penalty=1.2, min_p=0.05, top_p=1.0, exaggeration=0.5, cfg_weight=0.5, temperature=0.8):  # Use spacy to split into sentences
 
     if should_stop is None:
         should_stop = lambda: False
@@ -540,7 +547,7 @@ def gen_audio_segments(cb_model, nlp, text, speed, stats=None, max_sentences=Non
             return audio_segments
         if max_sentences and i > max_sentences: break
         # ChatterboxTTS does not use speed param, but keep for compatibility
-        wav = cb_model.generate(sent.text,temperature=0.1)
+        wav = cb_model.generate(sent.text, repetition_penalty=repetition_penalty, min_p=min_p, top_p=top_p, exaggeration=exaggeration, cfg_weight=cfg_weight, temperature=temperature)
         audio_segments.append(wav.numpy().flatten())
         if stats:
             update_stats(stats, len(sent.text))

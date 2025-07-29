@@ -38,6 +38,9 @@ from PyQt6.QtWidgets import (
     QWidget,
     QHBoxLayout,
     QDialog,
+    QSlider,
+    QDoubleSpinBox,
+    QGroupBox,
 )
 
 import core
@@ -231,7 +234,7 @@ class MainWindow(QMainWindow):
 
         splitter.setSizes([300, 900])
 
-        # ----------------- Settings Dialog -----------------
+    # ----------------- Settings Dialog -----------------
 
     def open_settings_dialog(self):
         dlg = SettingsDialog(self)
@@ -544,7 +547,13 @@ class MainWindow(QMainWindow):
                     selected_files=selected_files,
                     output_dir=self.output_dir_edit.text(),
                     ignore_list=ignore_list,
-                    wav_path=self.selected_wav_path
+                    wav_path=self.selected_wav_path,
+                    repetition_penalty=self.settings.value('repetition_penalty', 1.2, type=float),
+                    min_p=self.settings.value('min_p', 0.05, type=float),
+                    top_p=self.settings.value('top_p', 1.0, type=float),
+                    exaggeration=self.settings.value('exaggeration', 0.5, type=float),
+                    cfg_weight=self.settings.value('cfg_weight', 0.5, type=float),
+                    temperature=self.settings.value('temperature', 0.8, type=float)
                 )
                 self.batch_worker.progress_update.connect(self.on_batch_progress_update)
                 self.batch_worker.chapter_progress.connect(self.on_core_progress)
@@ -581,6 +590,12 @@ class MainWindow(QMainWindow):
                 output_folder=self.output_dir_edit.text(),
                 selected_chapters=selected_chapters,
                 audio_prompt_wav=self.selected_wav_path,
+                repetition_penalty=self.settings.value('repetition_penalty', 1.2, type=float),
+                min_p=self.settings.value('min_p', 0.05, type=float),
+                top_p=self.settings.value('top_p', 1.0, type=float),
+                exaggeration=self.settings.value('exaggeration', 0.5, type=float),
+                cfg_weight=self.settings.value('cfg_weight', 0.5, type=float),
+                temperature=self.settings.value('temperature', 0.8, type=float),
             )
             print(params)
             try:
@@ -672,7 +687,6 @@ class MainWindow(QMainWindow):
                     print(f"[DEBUG] Failed to delete {wav_file}: {e}")
             all_files_after = os.listdir(out_dir)
             print(f"[DEBUG] Files in output directory after deletion: {all_files_after}")
-        self.time_label.setText("Elapsed: 00:00 | ETA: --:--")
         # open output folder
         if os.path.isdir(out_dir):
             if platform.system() == "Windows":
@@ -682,7 +696,8 @@ class MainWindow(QMainWindow):
             else:
                 subprocess.Popen(["xdg-open", out_dir])
         # Always show "All files completed" at the end
-        QMessageBox.information(self, "All files completed", "All files completed")
+        elapsed_time = self.time_label.text().split(" | ")[0]
+        QMessageBox.information(self, "All files completed", f"All files completed in {elapsed_time}")
 
     def on_core_error(self, message: str):
         self.synth_running = False
@@ -733,12 +748,18 @@ class BatchWorker(QThread):
     chapter_progress = pyqtSignal(object)  # stats object from core
     finished = pyqtSignal()
 
-    def __init__(self, selected_files, output_dir, ignore_list, wav_path):
+    def __init__(self, selected_files, output_dir, ignore_list, wav_path, repetition_penalty, min_p, top_p, exaggeration, cfg_weight, temperature):
         super().__init__()
         self.selected_files = selected_files
         self.output_dir = output_dir
         self.ignore_list = ignore_list
         self.wav_path = wav_path
+        self.repetition_penalty = repetition_penalty
+        self.min_p = min_p
+        self.top_p = top_p
+        self.exaggeration = exaggeration
+        self.cfg_weight = cfg_weight
+        self.temperature = temperature
         self._should_stop = False
 
     def stop(self):
@@ -800,7 +821,13 @@ class BatchWorker(QThread):
                 selected_chapters=filtered_chapters,
                 audio_prompt_wav=self.wav_path if self.wav_path else None,
                 post_event=post_event,
-                should_stop=lambda: self._should_stop
+                should_stop=lambda: self._should_stop,
+                repetition_penalty=self.repetition_penalty,
+                min_p=self.min_p,
+                top_p=self.top_p,
+                exaggeration=self.exaggeration,
+                cfg_weight=self.cfg_weight,
+                temperature=self.temperature
             )
             completed += 1
             now = time.time()
@@ -881,26 +908,123 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.setMinimumWidth(400)
+        self.settings = QSettings("chatterblez", "chatterblez-pyqt")
+
         layout = QVBoxLayout(self)
-        batch_label = QLabel("<b>Batch Settings</b>")
-        layout.addWidget(batch_label)
+
+        # Batch Settings
+        batch_group = QGroupBox("Batch Settings")
+        batch_layout = QVBoxLayout(batch_group)
         chapter_names_label = QLabel("Comma separated values of chapter names to ignore:")
-        layout.addWidget(chapter_names_label)
+        batch_layout.addWidget(chapter_names_label)
         self.chapter_names_edit = QLineEdit()
-        layout.addWidget(self.chapter_names_edit)
-        settings = QSettings("chatterblez", "chatterblez-pyqt")
-        value = settings.value("batch_ignore_chapter_names", "", type=str)
+        batch_layout.addWidget(self.chapter_names_edit)
+        value = self.settings.value("batch_ignore_chapter_names", "", type=str)
         self.chapter_names_edit.setText(value)
         self.chapter_names_edit.textChanged.connect(self.save_chapter_names)
+        batch_group.setLayout(batch_layout)
+        layout.addWidget(batch_group)
+
+        # Model Settings
+        model_group = QGroupBox("Model Settings")
+        model_layout = QVBoxLayout(model_group)
+
+        # Repetition Penalty
+        self.repetition_penalty_label = QLabel(f"Repetition Penalty: {self.settings.value('repetition_penalty', 1.2, type=float)}")
+        model_layout.addWidget(self.repetition_penalty_label)
+        self.repetition_penalty_slider = QSlider(Qt.Orientation.Horizontal)
+        self.repetition_penalty_slider.setRange(10, 20)
+        self.repetition_penalty_slider.setValue(int(self.settings.value('repetition_penalty', 1.2, type=float) * 10))
+        self.repetition_penalty_slider.valueChanged.connect(self.update_repetition_penalty)
+        model_layout.addWidget(self.repetition_penalty_slider)
+
+        # Min P
+        self.min_p_label = QLabel(f"Min P: {self.settings.value('min_p', 0.05, type=float)}")
+        model_layout.addWidget(self.min_p_label)
+        self.min_p_slider = QSlider(Qt.Orientation.Horizontal)
+        self.min_p_slider.setRange(0, 100)
+        self.min_p_slider.setValue(int(self.settings.value('min_p', 0.05, type=float) * 100))
+        self.min_p_slider.valueChanged.connect(self.update_min_p)
+        model_layout.addWidget(self.min_p_slider)
+
+        # Top P
+        self.top_p_label = QLabel(f"Top P: {self.settings.value('top_p', 1.0, type=float)}")
+        model_layout.addWidget(self.top_p_label)
+        self.top_p_slider = QSlider(Qt.Orientation.Horizontal)
+        self.top_p_slider.setRange(0, 100)
+        self.top_p_slider.setValue(int(self.settings.value('top_p', 1.0, type=float) * 100))
+        self.top_p_slider.valueChanged.connect(self.update_top_p)
+        model_layout.addWidget(self.top_p_slider)
+
+        # Exaggeration
+        self.exaggeration_label = QLabel(f"Exaggeration: {self.settings.value('exaggeration', 0.5, type=float)}")
+        model_layout.addWidget(self.exaggeration_label)
+        self.exaggeration_slider = QSlider(Qt.Orientation.Horizontal)
+        self.exaggeration_slider.setRange(0, 100)
+        self.exaggeration_slider.setValue(int(self.settings.value('exaggeration', 0.5, type=float) * 100))
+        self.exaggeration_slider.valueChanged.connect(self.update_exaggeration)
+        model_layout.addWidget(self.exaggeration_slider)
+
+        # CFG Weight
+        self.cfg_weight_label = QLabel(f"CFG Weight: {self.settings.value('cfg_weight', 0.5, type=float)}")
+        model_layout.addWidget(self.cfg_weight_label)
+        self.cfg_weight_slider = QSlider(Qt.Orientation.Horizontal)
+        self.cfg_weight_slider.setRange(0, 100)
+        self.cfg_weight_slider.setValue(int(self.settings.value('cfg_weight', 0.5, type=float) * 100))
+        self.cfg_weight_slider.valueChanged.connect(self.update_cfg_weight)
+        model_layout.addWidget(self.cfg_weight_slider)
+
+        # Temperature
+        self.temperature_label = QLabel(f"Temperature: {self.settings.value('temperature', 0.8, type=float)}")
+        model_layout.addWidget(self.temperature_label)
+        self.temperature_slider = QSlider(Qt.Orientation.Horizontal)
+        self.temperature_slider.setRange(0, 100)
+        self.temperature_slider.setValue(int(self.settings.value('temperature', 0.8, type=float) * 100))
+        self.temperature_slider.valueChanged.connect(self.update_temperature)
+        model_layout.addWidget(self.temperature_slider)
+
+        model_group.setLayout(model_layout)
+        layout.addWidget(model_group)
+
         btn_box = QHBoxLayout()
         ok_btn = QPushButton("OK")
         ok_btn.clicked.connect(self.accept)
         btn_box.addStretch()
         btn_box.addWidget(ok_btn)
         layout.addLayout(btn_box)
+
     def save_chapter_names(self, text):
-        settings = QSettings("chatterblez", "chatterblez-pyqt")
-        settings.setValue("batch_ignore_chapter_names", text)
+        self.settings.setValue("batch_ignore_chapter_names", text)
+
+    def update_repetition_penalty(self, value):
+        val = value / 10.0
+        self.repetition_penalty_label.setText(f"Repetition Penalty: {val:.2f}")
+        self.settings.setValue("repetition_penalty", val)
+
+    def update_min_p(self, value):
+        val = value / 100.0
+        self.min_p_label.setText(f"Min P: {val:.2f}")
+        self.settings.setValue("min_p", val)
+
+    def update_top_p(self, value):
+        val = value / 100.0
+        self.top_p_label.setText(f"Top P: {val:.2f}")
+        self.settings.setValue("top_p", val)
+
+    def update_exaggeration(self, value):
+        val = value / 100.0
+        self.exaggeration_label.setText(f"Exaggeration: {val:.2f}")
+        self.settings.setValue("exaggeration", val)
+
+    def update_cfg_weight(self, value):
+        val = value / 100.0
+        self.cfg_weight_label.setText(f"CFG Weight: {val:.2f}")
+        self.settings.setValue("cfg_weight", val)
+
+    def update_temperature(self, value):
+        val = value / 100.0
+        self.temperature_label.setText(f"Temperature: {val:.2f}")
+        self.settings.setValue("temperature", val)
 
 class BatchFilesPanel(QWidget):
     def __init__(self, batch_files, parent=None):
