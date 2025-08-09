@@ -296,6 +296,7 @@ def main(file_path, pick_manually, speed, book_year='', output_folder='.',
         Path(output_folder).mkdir(parents=True, exist_ok=True)
 
     filename = Path(file_path).name
+    filename = re.sub(r'[^a-zA-Z0-9_.-]', '_', filename)
     extension = os.path.splitext(file_path)[1].lower()
     print(f"extension {extension}")
     if extension == '.pdf':
@@ -411,9 +412,8 @@ def main(file_path, pick_manually, speed, book_year='', output_folder='.',
         )
         print(f'Chapter {i}: {text}')
         
-        xhtml_file_name = re.sub(r'[\\/:*?"<>|]', '_', chapter.get_name()).replace(' ', '_').replace('.xhtml',
-                                                                                                     '').replace(
-            '.html', '')
+        # Sanitize the chapter name to remove all non-alphanumeric characters for the filename
+        xhtml_file_name = re.sub(r'[^a-zA-Z0-9-]', '', chapter.get_name()).replace('xhtml', '').replace('html', '')
         chapter_wav_path = Path(output_folder) / filename.replace(extension, f'_chapter_{xhtml_file_name}.wav')
         chapter_wav_files.append(chapter_wav_path)
         if Path(chapter_wav_path).exists():
@@ -556,6 +556,17 @@ def gen_audio_segments(cb_model, nlp, text, speed, stats=None, max_sentences=Non
     return audio_segments
 
 
+def extract_chapter_number(chapter_name):
+    """
+    Extracts the chapter number from a chapter name like 'Text/Chapter_18.xhtml'.
+    Returns the integer number, or a large number if not found, to sort non-matching
+    chapters last.
+    """
+    match = re.search(r'(\d+)', chapter_name)
+    if match:
+        return int(match.group(1))
+    return float('inf') # Return a large number for chapters that don't match
+
 def find_document_chapters_and_extract_texts(book):
     """Returns every chapter that is an ITEM_DOCUMENT and enriches each chapter with extracted_text."""
     document_chapters = []
@@ -571,6 +582,10 @@ def find_document_chapters_and_extract_texts(book):
                 text += '.'
             chapter.extracted_text += text + '\n'
         document_chapters.append(chapter)
+
+    # Sort chapters numerically based on their names
+    document_chapters.sort(key=lambda c: extract_chapter_number(c.get_name()))
+
     for i, c in enumerate(document_chapters):
         c.chapter_index = i
     return document_chapters

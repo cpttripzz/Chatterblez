@@ -633,7 +633,49 @@ class MainWindow(QMainWindow):
 
     def on_core_progress(self, stats: SimpleNamespace):
         self.progress_bar.setValue(int(stats.progress))
-        # Update elapsed time and ETA
+
+        if hasattr(self, "batch_worker") and self.batch_worker and self.batch_worker.isRunning():
+            # Batch mode progress update
+            completed = self.batch_worker.completed
+            total = len(self.batch_worker.selected_files)
+            
+            # This is progress for the current file
+            current_file_progress = stats.progress / 100.0
+            
+            # Overall progress
+            overall_progress = (completed + current_file_progress) / total
+            
+            if overall_progress > 0.001: # Avoid division by zero and unstable early estimates
+                elapsed = time.time() - self.batch_start_time
+                total_duration_est = elapsed / overall_progress
+                eta = total_duration_est - elapsed
+                
+                # Format ETA
+                eta_days, rem = divmod(eta, 86400)
+                eta_hours, rem = divmod(rem, 3600)
+                eta_min, eta_sec = divmod(rem, 60)
+                if eta_days > 0:
+                    eta_str = f"{int(eta_days)}d {int(eta_hours):02d}h"
+                elif eta_hours > 0:
+                    eta_str = f"{int(eta_hours):02d}h {int(eta_min):02d}m"
+                else:
+                    eta_str = f"{int(eta_min):02d}:{int(eta_sec):02d}"
+
+                # Format Elapsed
+                elapsed_days, rem = divmod(elapsed, 86400)
+                elapsed_hours, rem = divmod(rem, 3600)
+                elapsed_min, elapsed_sec = divmod(rem, 60)
+                if elapsed_days > 0:
+                    elapsed_str = f"{int(elapsed_days)}d {int(elapsed_hours):02d}h"
+                elif elapsed_hours > 0:
+                    elapsed_str = f"{int(elapsed_hours):02d}h {int(elapsed_min):02d}m"
+                else:
+                    elapsed_str = f"{int(elapsed_min):02d}:{int(elapsed_sec):02d}"
+                
+                self.time_label.setText(f"Batch Elapsed: {elapsed_str} | Batch ETA: {eta_str}")
+            return
+
+        # Update elapsed time and ETA for single file mode
         if hasattr(self, "start_time"):
             elapsed = int(time.time() - self.start_time)
             days, remainder = divmod(elapsed, 86400)
@@ -761,6 +803,8 @@ class BatchWorker(QThread):
         self.cfg_weight = cfg_weight
         self.temperature = temperature
         self._should_stop = False
+        self.completed = 0
+        self.current_file_progress = 0.0
 
     def stop(self):
         print("[DEBUG] BatchWorker.stop() called")
@@ -769,19 +813,23 @@ class BatchWorker(QThread):
     def run(self):
         import core
         import time
-        completed = 0
+        self.completed = 0
         total = len(self.selected_files)
         batch_start_time = time.time()
 
         def post_event(evt_name, **kwargs):
             if evt_name == "CORE_PROGRESS":
                 stats = kwargs.get("stats")
+                if stats:
+                    self.current_file_progress = stats.progress / 100.0
                 self.chapter_progress.emit(stats)
 
         for file_path in self.selected_files:
             if self._should_stop:
                 print("[DEBUG] BatchWorker.run() detected stop, breaking batch loop")
                 break
+            
+            self.current_file_progress = 0.0
             ext = os.path.splitext(file_path)[1].lower()
             chapters = []
             if ext == ".epub":
@@ -829,7 +877,7 @@ class BatchWorker(QThread):
                 cfg_weight=self.cfg_weight,
                 temperature=self.temperature
             )
-            completed += 1
+            self.completed += 1
             now = time.time()
             elapsed = int(now - batch_start_time)
             days, remainder = divmod(elapsed, 86400)
@@ -842,15 +890,15 @@ class BatchWorker(QThread):
                 elapsed_str = f"{int(hours):02d}h {int(minutes):02d}m"
             else:
                 elapsed_str = f"{int(minutes):02d}:{int(seconds):02d}"
-            if completed > 0:
-                total_est = elapsed / completed
+            if self.completed > 0:
+                total_est = elapsed / self.completed
                 eta = int(total_est * total - elapsed)
                 eta_min = eta // 60
                 eta_sec = eta % 60
                 eta_str = f"{eta_min:02d}:{eta_sec:02d}"
             else:
                 eta_str = "--:--"
-            self.progress_update.emit(completed, total, elapsed_str, eta_str)
+            self.progress_update.emit(self.completed, total, elapsed_str, eta_str)
         self.finished.emit()
 
 def on_batch_progress_update(self, completed, total, elapsed_str, eta_str):
@@ -933,7 +981,7 @@ class SettingsDialog(QDialog):
         self.repetition_penalty_label = QLabel(f"Repetition Penalty: {self.settings.value('repetition_penalty', 1.2, type=float)}")
         model_layout.addWidget(self.repetition_penalty_label)
         self.repetition_penalty_slider = QSlider(Qt.Orientation.Horizontal)
-        self.repetition_penalty_slider.setRange(10, 20)
+        self.repetition_penalty_slider.setRange(-10, 20)
         self.repetition_penalty_slider.setValue(int(self.settings.value('repetition_penalty', 1.2, type=float) * 10))
         self.repetition_penalty_slider.valueChanged.connect(self.update_repetition_penalty)
         model_layout.addWidget(self.repetition_penalty_slider)
@@ -987,11 +1035,37 @@ class SettingsDialog(QDialog):
         layout.addWidget(model_group)
 
         btn_box = QHBoxLayout()
+        reset_btn = QPushButton("Reset to Defaults")
+        reset_btn.clicked.connect(self.reset_to_defaults)
         ok_btn = QPushButton("OK")
         ok_btn.clicked.connect(self.accept)
         btn_box.addStretch()
+        btn_box.addWidget(reset_btn)
         btn_box.addWidget(ok_btn)
         layout.addLayout(btn_box)
+
+    def reset_to_defaults(self):
+        # Reset all settings to their default values
+        self.settings.setValue("repetition_penalty", 1.2)
+        self.settings.setValue("min_p", 0.05)
+        self.settings.setValue("top_p", 1.0)
+        self.settings.setValue("exaggeration", 0.5)
+        self.settings.setValue("cfg_weight", 0.5)
+        self.settings.setValue("temperature", 0.8)
+
+        # Update the UI elements to reflect the new values
+        self.update_repetition_penalty(12)
+        self.repetition_penalty_slider.setValue(12)
+        self.update_min_p(5)
+        self.min_p_slider.setValue(5)
+        self.update_top_p(100)
+        self.top_p_slider.setValue(100)
+        self.update_exaggeration(50)
+        self.exaggeration_slider.setValue(50)
+        self.update_cfg_weight(50)
+        self.cfg_weight_slider.setValue(50)
+        self.update_temperature(80)
+        self.temperature_slider.setValue(80)
 
     def save_chapter_names(self, text):
         self.settings.setValue("batch_ignore_chapter_names", text)
