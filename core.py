@@ -36,7 +36,9 @@ from pydub.silence import split_on_silence
 from functools import lru_cache
 
 sample_rate = 24000
-
+import perth
+if perth.PerthImplicitWatermarker is None:
+    perth.PerthImplicitWatermarker = perth.DummyWatermarker
 
 def remove_silence_from_audio(input_file, output_file, silence_thresh=-50, min_silence_len=1000, keep_silence=200):
     """
