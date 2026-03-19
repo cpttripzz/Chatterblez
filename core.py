@@ -15,6 +15,7 @@ import spacy
 import ebooklib
 import soundfile
 import numpy as np
+import librosa
 import time
 import shutil
 import subprocess
@@ -36,6 +37,31 @@ from pydub.silence import split_on_silence
 from functools import lru_cache
 
 sample_rate = 24000
+
+
+def apply_voice_speed(audio_path: str, speed: float, target_sr: int = sample_rate):
+    """
+    Apply time-stretching to an audio file without changing pitch.
+
+    Args:
+        audio_path: Path to the audio file to modify in place.
+        speed: Playback speed multiplier (> 0). Values >1 speed up audio.
+        target_sr: Target sample rate for loading/writing.
+    """
+    if not audio_path or speed is None:
+        return
+    if speed <= 0:
+        logging.warning(f"Invalid voice speed {speed}; skipping time-stretch.")
+        return
+    if abs(speed - 1.0) < 1e-3:
+        return
+    try:
+        audio, sr = librosa.load(audio_path, sr=target_sr)
+        stretched = librosa.effects.time_stretch(audio, rate=speed)
+        soundfile.write(audio_path, stretched, sr)
+        logging.info(f"Applied voice speed {speed:.2f}x to {audio_path}")
+    except Exception as exc:
+        logging.error(f"Failed to apply voice speed {speed} to {audio_path}: {exc}")
 
 
 def remove_silence_from_audio(input_file, output_file, silence_thresh=-50, min_silence_len=1000, keep_silence=200):
@@ -362,6 +388,7 @@ def main(file_path, pick_manually, speed, book_year='', output_folder='.',
     )
     logging.getLogger('chatterbox').setLevel(logging.WARNING)
     params = {
+        "speed": speed,
         "repetition_penalty":repetition_penalty,
         "min_p":min_p,
         "top_p":top_p,
@@ -594,6 +621,8 @@ def main(file_path, pick_manually, speed, book_year='', output_folder='.',
                 # Replace original with trimmed
                 os.remove(chapter_wav_path)
                 os.rename(trimmed_path, chapter_wav_path)
+
+            apply_voice_speed(chapter_wav_path, speed)
 
             end_time = time.time()
             delta_seconds = end_time - start_time

@@ -518,6 +518,7 @@ class MainWindow(QMainWindow):
 
             selected_chapters = [c for c in self.document_chapters if c.is_selected]
 
+            voice_speed = float(self.settings.value("voice_speed", 1.0, type=float))
             if hasattr(self, "batch_files") and self.batch_files:
                 selected_files = [f["path"] for f in self.batch_files if f["selected"]]
                 if not selected_files:
@@ -533,7 +534,7 @@ class MainWindow(QMainWindow):
                     output_folder=self.output_dir_edit.text(),
                     filterlist=ignore_csv,
                     wav_path=self.selected_wav_path,
-                    speed=1.0,
+                    speed=voice_speed,
                     is_batch=True
                 )
 
@@ -551,6 +552,7 @@ class MainWindow(QMainWindow):
                     output_dir=self.output_dir_edit.text(),
                     ignore_list=ignore_list,
                     wav_path=self.selected_wav_path,
+                    voice_speed=voice_speed,
                     repetition_penalty=self.settings.value('repetition_penalty', 1.2, type=float),
                     min_p=self.settings.value('min_p', 0.05, type=float),
                     top_p=self.settings.value('top_p', 1.0, type=float),
@@ -585,7 +587,7 @@ class MainWindow(QMainWindow):
                 output_folder=self.output_dir_edit.text(),
                 filterlist="",
                 wav_path=self.selected_wav_path,
-                speed=1.0,
+                speed=voice_speed,
                 is_batch=False
             )
 
@@ -593,7 +595,7 @@ class MainWindow(QMainWindow):
             params = dict(
                 file_path=self.selected_file_path,
                 pick_manually=False,
-                speed=1.0,
+                speed=voice_speed,
                 output_folder=self.output_dir_edit.text(),
                 selected_chapters=selected_chapters,
                 audio_prompt_wav=self.selected_wav_path,
@@ -791,12 +793,13 @@ class BatchWorker(QThread):
     chapter_progress = pyqtSignal(object)  # stats object from core
     finished = pyqtSignal()
 
-    def __init__(self, selected_files, output_dir, ignore_list, wav_path, repetition_penalty, min_p, top_p, exaggeration, cfg_weight, temperature, enable_silence_trimming, silence_thresh, min_silence_len, keep_silence):
+    def __init__(self, selected_files, output_dir, ignore_list, wav_path, voice_speed, repetition_penalty, min_p, top_p, exaggeration, cfg_weight, temperature, enable_silence_trimming, silence_thresh, min_silence_len, keep_silence):
         super().__init__()
         self.selected_files = selected_files
         self.output_dir = output_dir
         self.ignore_list = ignore_list
         self.wav_path = wav_path
+        self.voice_speed = voice_speed
         self.repetition_penalty = repetition_penalty
         self.min_p = min_p
         self.top_p = top_p
@@ -869,7 +872,7 @@ class BatchWorker(QThread):
             core.main(
                 file_path=file_path,
                 pick_manually=False,
-                speed=1.0,
+                speed=self.voice_speed,
                 output_folder=self.output_dir,
                 selected_chapters=filtered_chapters,
                 audio_prompt_wav=self.wav_path if self.wav_path else None,
@@ -1043,6 +1046,18 @@ class SettingsDialog(QDialog):
         model_group.setLayout(model_layout)
         layout.addWidget(model_group)
 
+        # Voice Settings
+        voice_group = QGroupBox("Voice Settings")
+        voice_layout = QFormLayout(voice_group)
+        self.voice_speed_spinbox = QDoubleSpinBox()
+        self.voice_speed_spinbox.setRange(1.0, 2.0)
+        self.voice_speed_spinbox.setSingleStep(0.1)
+        self.voice_speed_spinbox.setDecimals(1)
+        self.voice_speed_spinbox.setValue(self.settings.value("voice_speed", 1.0, type=float))
+        self.voice_speed_spinbox.valueChanged.connect(self.update_voice_speed)
+        voice_layout.addRow("Voice Speed:", self.voice_speed_spinbox)
+        layout.addWidget(voice_group)
+
         # Silence Trimming Settings
         trim_group = QGroupBox("Silence Trimming")
         trim_layout = QFormLayout(trim_group)
@@ -1104,6 +1119,7 @@ class SettingsDialog(QDialog):
         self.silence_thresh_spinbox.setValue(self.settings.value("silence_thresh", -50, type=float))
         self.min_silence_len_spinbox.setValue(self.settings.value("min_silence_len", 500, type=int))
         self.keep_silence_spinbox.setValue(self.settings.value("keep_silence", 100, type=int))
+        self.voice_speed_spinbox.setValue(self.settings.value("voice_speed", 1.0, type=float))
 
         # Update labels to reflect the loaded values
         self.update_repetition_penalty(self.repetition_penalty_slider.value())
@@ -1145,6 +1161,9 @@ class SettingsDialog(QDialog):
         val = value / 100.0
         self.temperature_label.setText(f"Temperature: {val:.2f}")
         self.settings.setValue("temperature", val)
+
+    def update_voice_speed(self, value: float):
+        self.settings.setValue("voice_speed", float(value))
 
 class BatchFilesPanel(QWidget):
     def __init__(self, batch_files, parent=None):
