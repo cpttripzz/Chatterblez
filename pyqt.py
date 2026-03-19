@@ -83,7 +83,7 @@ class CoreThread(QThread):
             logging.info("CoreThread started with params: %s", self.params)
             core.main(**self.params, post_event=self.post_event, should_stop=lambda: self._should_stop)
         except Exception as exc:
-            logging.error("CoreThread exception: %s", exc)
+            logging.exception("CoreThread exception: %s", exc)  # <-- change error to exception
             self.error.emit(str(exc))
 
 

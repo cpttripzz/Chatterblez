@@ -37,7 +37,9 @@ from pydub.silence import split_on_silence
 from functools import lru_cache
 
 sample_rate = 24000
-
+import perth
+if perth.PerthImplicitWatermarker is None:
+    perth.PerthImplicitWatermarker = perth.DummyWatermarker
 
 def apply_voice_speed(audio_path: str, speed: float, target_sr: int = sample_rate):
     """
