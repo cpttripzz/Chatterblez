@@ -35,7 +35,18 @@ from pydub import AudioSegment
 from pydub.silence import split_on_silence
 
 from functools import lru_cache
+from ebooklib.epub import EpubReader
 
+_original_read_file = EpubReader.read_file
+
+def _safe_read_file(self, name):
+    try:
+        return _original_read_file(self, name)
+    except KeyError:
+        logging.warning(f"epub manifest references missing file: {name!r} — skipping")
+        return b""
+
+EpubReader.read_file = _safe_read_file
 sample_rate = 24000
 import perth
 if perth.PerthImplicitWatermarker is None:
@@ -58,9 +69,21 @@ def apply_voice_speed(audio_path: str, speed: float, target_sr: int = sample_rat
     if abs(speed - 1.0) < 1e-3:
         return
     try:
-        audio, sr = librosa.load(audio_path, sr=target_sr)
-        stretched = librosa.effects.time_stretch(audio, rate=speed)
-        soundfile.write(audio_path, stretched, sr)
+        audio, sr = librosa.load(audio_path, sr=None, mono=False, res_type="soxr_vhq")
+
+        # time_stretch requires mono input — process per channel
+        if audio.ndim == 1:
+            stretched = librosa.effects.time_stretch(audio, rate=speed)
+        else:
+            stretched = np.vstack([
+                librosa.effects.time_stretch(ch, rate=speed)
+                for ch in audio  # audio shape: (channels, N)
+            ])
+
+        # soundfile expects (N, channels), librosa gives (channels, N)
+        out = stretched.T if stretched.ndim > 1 else stretched
+        soundfile.write(audio_path, out, sr)
+
         logging.info(f"Applied voice speed {speed:.2f}x to {audio_path}")
     except Exception as exc:
         logging.error(f"Failed to apply voice speed {speed} to {audio_path}: {exc}")
