@@ -67,6 +67,28 @@ pip install git+https://github.com/resemble-ai/chatterbox.git
 
 This might take a moment, so grab a coffee! ☕
 
+#### Optional TTS engines
+
+Chatterblez keeps Qwen3 TTS and PocketTTS in `.venv-qwen3-tts` and
+`.venv-pockettts` respectively. This is intentional: their Transformers and
+NumPy requirements conflict with Chatterbox. The application starts the chosen
+engine in its matching environment automatically; do not activate either
+environment to launch the GUI.
+
+After cloning an existing checkout where these folders are absent, create them
+with the project Python and install the engine packages (use the CUDA wheel if
+you want the Settings GPU option):
+
+```powershell
+.venv\Scripts\python.exe -m venv .venv-qwen3-tts
+.venv-qwen3-tts\Scripts\python.exe -m pip install torch==2.6.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+.venv-qwen3-tts\Scripts\python.exe -m pip install qwen-tts==0.1.1 soundfile hf-xet
+
+.venv\Scripts\python.exe -m venv .venv-pockettts
+.venv-pockettts\Scripts\python.exe -m pip install torch==2.6.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+.venv-pockettts\Scripts\python.exe -m pip install pocket-tts==3.1.0 soundfile
+```
+
 #### 4. Install FFMPEG 🔊
 
 FFmpeg is required for audio processing. Here's how to install it:

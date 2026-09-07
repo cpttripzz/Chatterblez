@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QCheckBox,
+    QComboBox,
     QHeaderView,
     QLabel,
     QLineEdit,
@@ -55,14 +56,35 @@ class CoreThread(QThread):
     chapter_finished = pyqtSignal(int)
     finished = pyqtSignal()
     error = pyqtSignal(str)
+    status = pyqtSignal(str)
 
     def __init__(self, **params):
         super().__init__()
         self.params = params
         self._should_stop = False
+        self._is_paused = False
+        self._pause_condition = threading.Condition()
 
     def stop(self):
-        self._should_stop = True
+        with self._pause_condition:
+            self._should_stop = True
+            self._is_paused = False
+            self._pause_condition.notify_all()
+
+    def pause(self):
+        with self._pause_condition:
+            self._is_paused = True
+
+    def resume(self):
+        with self._pause_condition:
+            self._is_paused = False
+            self._pause_condition.notify_all()
+
+    def wait_if_paused(self):
+        with self._pause_condition:
+            while self._is_paused and not self._should_stop:
+                self._pause_condition.wait()
+            return self._should_stop
 
     def post_event(self, evt_name: str, **kwargs):
         if evt_name == "CORE_STARTED":
@@ -77,11 +99,20 @@ class CoreThread(QThread):
             self.finished.emit()
         elif evt_name == "CORE_ERROR":
             self.error.emit(kwargs.get("message", "Unknown error"))
+        elif evt_name == "CORE_THERMAL_PAUSED":
+            self.status.emit(f"GPU thermal throttle ({kwargs.get('temperature', '?')}°C); cooling…")
+        elif evt_name == "CORE_THERMAL_RESUMED":
+            self.status.emit("Synthesizing")
 
     def run(self):
         try:
             logging.info("CoreThread started with params: %s", self.params)
-            core.main(**self.params, post_event=self.post_event, should_stop=lambda: self._should_stop)
+            core.main(
+                **self.params,
+                post_event=self.post_event,
+                should_stop=lambda: self._should_stop,
+                should_pause=self.wait_if_paused,
+            )
         except Exception as exc:
             logging.exception("CoreThread exception: %s", exc)  # <-- change error to exception
             self.error.emit(str(exc))
@@ -99,16 +130,12 @@ class MainWindow(QMainWindow):
         self.settings = QSettings("Chatterblez", "chatterblez-pyqt")
         self.document_chapters: list = []
         self.selected_file_path: str | None = None
-        self.selected_wav_path: str | None = None
         self.core_thread: CoreThread | None = None
 
         self._build_ui()
         self.synth_running = False
+        self.synth_paused = False
 
-        wav_path = self.settings.value("selected_wav_path", "", type=str)
-        if wav_path:
-            self.selected_wav_path = wav_path
-            self.wav_button.setText(Path(wav_path).name)
         output_folder = self.settings.value("output_folder", "", type=str)
         if output_folder:
             self.output_dir_edit.setText(output_folder)
@@ -189,11 +216,6 @@ class MainWindow(QMainWindow):
         self.preview_thread = None
         self.preview_stop_flag = threading.Event()
 
-        # WAV button
-        self.wav_button = QPushButton("Select Voice WAV")
-        self.wav_button.clicked.connect(self.select_wav)
-        controls_layout.addWidget(self.wav_button)
-
         # Output dir
         output_label = QLabel("Output Folder:")
         controls_layout.addWidget(output_label)
@@ -210,6 +232,11 @@ class MainWindow(QMainWindow):
         self.start_btn = QPushButton("Start Synthesis")
         self.start_btn.clicked.connect(self.handle_start_stop_synthesis)
         controls_layout.addWidget(self.start_btn)
+
+        self.pause_btn = QPushButton("Pause")
+        self.pause_btn.setEnabled(False)
+        self.pause_btn.clicked.connect(self.handle_pause_synthesis)
+        controls_layout.addWidget(self.pause_btn)
 
         # Progress bar
         self.progress_bar = QProgressBar()
@@ -380,6 +407,7 @@ class MainWindow(QMainWindow):
         controls_row_layout.addWidget(self.wav_button)
         controls_row_layout.addWidget(self.output_dir_edit)
         controls_row_layout.addWidget(self.start_btn)
+        controls_row_layout.addWidget(self.pause_btn)
         controls_row_layout.addStretch()
         controls_row_layout.addWidget(self.progress_bar)
         controls_row_layout.addWidget(self.batch_progress_label)
@@ -428,7 +456,6 @@ class MainWindow(QMainWindow):
         try:
             from tempfile import NamedTemporaryFile
             import torch
-            from chatterbox.tts import ChatterboxTTS
             import core
 
             row = self.chapter_list.currentRow()
@@ -452,10 +479,14 @@ class MainWindow(QMainWindow):
                 self.preview_btn.setText("Preview")
                 return
 
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            cb_model = ChatterboxTTS.from_pretrained(device=device)
-            if self.selected_wav_path:
-                cb_model.prepare_conditionals(wav_fpath=self.selected_wav_path)
+            use_gpu = self.settings.value("use_gpu", True, type=bool)
+            device = "cuda" if use_gpu and torch.cuda.is_available() else "cpu"
+            tts_engine = core.load_tts_engine(
+                self.settings.value("tts_model", "Chatterbox", type=str),
+                device,
+                self.voice_prompt_path(),
+                self.pocket_voice(),
+            )
             torch.manual_seed(12345)
             sentences = re.split(r'(?<=[.!?])\s+', text)
             chunks = [sent.strip() for sent in sentences if sent.strip()]
@@ -464,10 +495,9 @@ class MainWindow(QMainWindow):
             for chunk in chunks:
                 if self.preview_stop_flag.is_set():
                     break
-                wav = cb_model.generate(chunk)
+                wav = tts_engine.generate(chunk)
                 with NamedTemporaryFile(suffix=".wav", delete=False) as tmpf:
-                    import torchaudio as ta
-                    ta.save(tmpf.name, wav, cb_model.sr)
+                    soundfile.write(tmpf.name, wav, tts_engine.sample_rate)
                     tmpf.flush()
                     # Play using OS default player
                     if self.preview_stop_flag.is_set():
@@ -484,15 +514,15 @@ class MainWindow(QMainWindow):
         finally:
             self.preview_btn.setText("Preview")
 
-    def select_wav(self):
-        wav_path, _ = QFileDialog.getOpenFileName(
-            self, "Select WAV file", "", "Wave files (*.wav)"
-        )
-        if wav_path:
-            self.selected_wav_path = wav_path
-            self.wav_button.setText(Path(wav_path).name)
-            # Save to persistent settings
-            self.settings.setValue("selected_wav_path", wav_path)
+    def voice_prompt_path(self):
+        """Return a clone WAV only when the user explicitly enabled it."""
+        if not self.settings.value("use_cloned_voice", False, type=bool):
+            return None
+        path = self.settings.value("selected_wav_path", "", type=str)
+        return path or None
+
+    def pocket_voice(self):
+        return self.settings.value("pocket_voice", "alba", type=str)
 
     def select_output_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Select output folder")
@@ -533,7 +563,7 @@ class MainWindow(QMainWindow):
                     batch_folder=os.path.dirname(selected_files[0]) if selected_files else "",
                     output_folder=self.output_dir_edit.text(),
                     filterlist=ignore_csv,
-                    wav_path=self.selected_wav_path,
+                    wav_path=self.voice_prompt_path(),
                     speed=voice_speed,
                     is_batch=True
                 )
@@ -551,7 +581,7 @@ class MainWindow(QMainWindow):
                     selected_files=selected_files,
                     output_dir=self.output_dir_edit.text(),
                     ignore_list=ignore_list,
-                    wav_path=self.selected_wav_path,
+                    wav_path=self.voice_prompt_path(),
                     voice_speed=voice_speed,
                     repetition_penalty=self.settings.value('repetition_penalty', 1.2, type=float),
                     min_p=self.settings.value('min_p', 0.05, type=float),
@@ -559,6 +589,9 @@ class MainWindow(QMainWindow):
                     exaggeration=self.settings.value('exaggeration', 0.5, type=float),
                     cfg_weight=self.settings.value('cfg_weight', 0.5, type=float),
                     temperature=self.settings.value('temperature', 0.8, type=float),
+                    tts_model=self.settings.value('tts_model', 'Chatterbox', type=str),
+                    pocket_voice=self.pocket_voice(),
+                    use_gpu=self.settings.value('use_gpu', True, type=bool),
                     enable_silence_trimming=self.settings.value('enable_silence_trimming', False, type=bool),
                     silence_thresh=self.settings.value('silence_thresh', -50, type=float),
                     min_silence_len=self.settings.value('min_silence_len', 500, type=int),
@@ -566,10 +599,14 @@ class MainWindow(QMainWindow):
                 )
                 self.batch_worker.progress_update.connect(self.on_batch_progress_update)
                 self.batch_worker.chapter_progress.connect(self.on_core_progress)
+                self.batch_worker.status.connect(self.set_task_label)
                 self.batch_worker.finished.connect(self.on_batch_finished)
                 self.batch_worker.start()
                 self.synth_running = True
+                self.synth_paused = False
                 self.start_btn.setText("Stop Synthesizing")
+                self.pause_btn.setEnabled(True)
+                self.pause_btn.setText("Pause")
                 return
             else:
                 if not selected_chapters:
@@ -586,7 +623,7 @@ class MainWindow(QMainWindow):
                 file_path=self.selected_file_path,
                 output_folder=self.output_dir_edit.text(),
                 filterlist="",
-                wav_path=self.selected_wav_path,
+                wav_path=self.voice_prompt_path(),
                 speed=voice_speed,
                 is_batch=False
             )
@@ -598,13 +635,16 @@ class MainWindow(QMainWindow):
                 speed=voice_speed,
                 output_folder=self.output_dir_edit.text(),
                 selected_chapters=selected_chapters,
-                audio_prompt_wav=self.selected_wav_path,
+                audio_prompt_wav=self.voice_prompt_path(),
+                pocket_voice=self.pocket_voice(),
                 repetition_penalty=self.settings.value('repetition_penalty', 1.2, type=float),
                 min_p=self.settings.value('min_p', 0.05, type=float),
                 top_p=self.settings.value('top_p', 1.0, type=float),
                 exaggeration=self.settings.value('exaggeration', 0.5, type=float),
                 cfg_weight=self.settings.value('cfg_weight', 0.5, type=float),
                 temperature=self.settings.value('temperature', 0.8, type=float),
+                tts_model=self.settings.value('tts_model', 'Chatterbox', type=str),
+                use_gpu=self.settings.value('use_gpu', True, type=bool),
                 enable_silence_trimming=self.settings.value('enable_silence_trimming', False, type=bool),
                 silence_thresh=self.settings.value('silence_thresh', -50, type=float),
                 min_silence_len=self.settings.value('min_silence_len', 500, type=int),
@@ -619,9 +659,13 @@ class MainWindow(QMainWindow):
                 self.core_thread.chapter_finished.connect(self.on_core_chapter_finished)
                 self.core_thread.finished.connect(self.on_core_finished)
                 self.core_thread.error.connect(self.on_core_error)
+                self.core_thread.status.connect(self.set_task_label)
                 self.core_thread.start()
                 self.synth_running = True
+                self.synth_paused = False
                 self.start_btn.setText("Stop Synthesizing")
+                self.pause_btn.setEnabled(True)
+                self.pause_btn.setText("Pause")
             except Exception as e:
                 logging.error(f"Exception during CoreThread creation/start: {e}")
         else:
@@ -634,7 +678,31 @@ class MainWindow(QMainWindow):
                 logging.debug("[DEBUG] MainWindow: calling batch_worker.stop()")
                 self.batch_worker.stop()
             self.synth_running = False
+            self.synth_paused = False
             self.start_btn.setText("Start Synthesis")
+            self.pause_btn.setEnabled(False)
+            self.pause_btn.setText("Pause")
+
+    def handle_pause_synthesis(self):
+        if not self.synth_running:
+            return
+
+        worker = self.core_thread
+        if hasattr(self, "batch_worker") and self.batch_worker is not None and self.batch_worker.isRunning():
+            worker = self.batch_worker
+
+        if self.synth_paused:
+            logging.info("Resuming synthesis")
+            worker.resume()
+            self.synth_paused = False
+            self.pause_btn.setText("Pause")
+            self.set_task_label("Synthesizing")
+        else:
+            logging.info("Pausing synthesis")
+            worker.pause()
+            self.synth_paused = True
+            self.pause_btn.setText("Resume")
+            self.set_task_label("Pausing after current sample…")
 
 # ----------------- Slots connected to CoreThread signals -----------------
     def on_core_started(self):
@@ -720,7 +788,10 @@ class MainWindow(QMainWindow):
     def on_core_finished(self):
         self.progress_bar.setValue(100)
         self.synth_running = False
+        self.synth_paused = False
         self.start_btn.setText("Start Synthesis")
+        self.pause_btn.setEnabled(False)
+        self.pause_btn.setText("Pause")
         self.set_task_label("")
 
         out_dir = os.path.abspath(self.output_dir_edit.text())
@@ -746,7 +817,10 @@ class MainWindow(QMainWindow):
 
     def on_core_error(self, message: str):
         self.synth_running = False
+        self.synth_paused = False
         self.start_btn.setText("Start Synthesis")
+        self.pause_btn.setEnabled(False)
+        self.pause_btn.setText("Pause")
         logging.error(f"Error: {message}")
         QMessageBox.critical(self, "Error", message)
 
@@ -777,6 +851,9 @@ class MainWindow(QMainWindow):
             cmd += ["--wav", f'"{to_posix(wav_path)}"']
         if speed and speed != 1.0:
             cmd += ["--speed", str(speed)]
+        tts_model = self.settings.value("tts_model", "Chatterbox", type=str)
+        if tts_model != "Chatterbox":
+            cmd += ["--tts-model", f'"{tts_model}"']
         cli_command = " ".join(cmd)
         logging.info(f"cli_command: {cli_command}")
         try:
@@ -791,9 +868,10 @@ from PyQt6.QtCore import pyqtSignal
 class BatchWorker(QThread):
     progress_update = pyqtSignal(int, int, str, str)  # completed, total, elapsed_str, eta_str
     chapter_progress = pyqtSignal(object)  # stats object from core
+    status = pyqtSignal(str)
     finished = pyqtSignal()
 
-    def __init__(self, selected_files, output_dir, ignore_list, wav_path, voice_speed, repetition_penalty, min_p, top_p, exaggeration, cfg_weight, temperature, enable_silence_trimming, silence_thresh, min_silence_len, keep_silence):
+    def __init__(self, selected_files, output_dir, ignore_list, wav_path, voice_speed, repetition_penalty, min_p, top_p, exaggeration, cfg_weight, temperature, tts_model, pocket_voice, use_gpu, enable_silence_trimming, silence_thresh, min_silence_len, keep_silence):
         super().__init__()
         self.selected_files = selected_files
         self.output_dir = output_dir
@@ -806,17 +884,40 @@ class BatchWorker(QThread):
         self.exaggeration = exaggeration
         self.cfg_weight = cfg_weight
         self.temperature = temperature
+        self.tts_model = tts_model
+        self.pocket_voice = pocket_voice
+        self.use_gpu = use_gpu
         self.enable_silence_trimming = enable_silence_trimming
         self.silence_thresh = silence_thresh
         self.min_silence_len = min_silence_len
         self.keep_silence = keep_silence
         self._should_stop = False
+        self._is_paused = False
+        self._pause_condition = threading.Condition()
         self.completed = 0
         self.current_file_progress = 0.0
 
     def stop(self):
         logging.debug("BatchWorker.stop() called")
-        self._should_stop = True
+        with self._pause_condition:
+            self._should_stop = True
+            self._is_paused = False
+            self._pause_condition.notify_all()
+
+    def pause(self):
+        with self._pause_condition:
+            self._is_paused = True
+
+    def resume(self):
+        with self._pause_condition:
+            self._is_paused = False
+            self._pause_condition.notify_all()
+
+    def wait_if_paused(self):
+        with self._pause_condition:
+            while self._is_paused and not self._should_stop:
+                self._pause_condition.wait()
+            return self._should_stop
 
     def run(self):
         import core
@@ -831,6 +932,10 @@ class BatchWorker(QThread):
                 if stats:
                     self.current_file_progress = stats.progress / 100.0
                 self.chapter_progress.emit(stats)
+            elif evt_name == "CORE_THERMAL_PAUSED":
+                self.status.emit(f"GPU thermal throttle ({kwargs.get('temperature', '?')}°C); cooling…")
+            elif evt_name == "CORE_THERMAL_RESUMED":
+                self.status.emit("Synthesizing")
 
         for file_path in self.selected_files:
             if self._should_stop:
@@ -876,14 +981,18 @@ class BatchWorker(QThread):
                 output_folder=self.output_dir,
                 selected_chapters=filtered_chapters,
                 audio_prompt_wav=self.wav_path if self.wav_path else None,
+                pocket_voice=self.pocket_voice,
                 post_event=post_event,
                 should_stop=lambda: self._should_stop,
+                should_pause=self.wait_if_paused,
                 repetition_penalty=self.repetition_penalty,
                 min_p=self.min_p,
                 top_p=self.top_p,
                 exaggeration=self.exaggeration,
                 cfg_weight=self.cfg_weight,
                 temperature=self.temperature,
+                tts_model=self.tts_model,
+                use_gpu=self.use_gpu,
                 enable_silence_trimming=self.enable_silence_trimming,
                 silence_thresh=self.silence_thresh,
                 min_silence_len=self.min_silence_len,
@@ -989,6 +1098,21 @@ class SettingsDialog(QDialog):
         model_group = QGroupBox("Model Settings")
         model_layout = QVBoxLayout(model_group)
 
+        self.tts_model_selector = QComboBox()
+        self.tts_model_selector.addItems(core.TTS_MODELS)
+        selected_model = self.settings.value("tts_model", "Chatterbox", type=str)
+        self.tts_model_selector.setCurrentText(
+            selected_model if selected_model in core.TTS_MODELS else "Chatterbox"
+        )
+        self.tts_model_selector.currentTextChanged.connect(self.update_tts_model)
+        model_layout.addWidget(QLabel("TTS Model:"))
+        model_layout.addWidget(self.tts_model_selector)
+
+        self.use_gpu_checkbox = QCheckBox("Use GPU where supported")
+        self.use_gpu_checkbox.setChecked(self.settings.value("use_gpu", True, type=bool))
+        self.use_gpu_checkbox.stateChanged.connect(self.update_use_gpu)
+        model_layout.addWidget(self.use_gpu_checkbox)
+
         # Repetition Penalty
         self.repetition_penalty_label = QLabel(f"Repetition Penalty: {self.settings.value('repetition_penalty', 1.1, type=float)}")
         model_layout.addWidget(self.repetition_penalty_label)
@@ -1049,6 +1173,35 @@ class SettingsDialog(QDialog):
         # Voice Settings
         voice_group = QGroupBox("Voice Settings")
         voice_layout = QFormLayout(voice_group)
+        self.use_cloned_voice_checkbox = QCheckBox("Use cloned voice (WAV)")
+        self.use_cloned_voice_checkbox.setChecked(
+            self.settings.value("use_cloned_voice", False, type=bool)
+        )
+        self.use_cloned_voice_checkbox.stateChanged.connect(self.update_use_cloned_voice)
+        voice_layout.addRow(self.use_cloned_voice_checkbox)
+
+        self.voice_wav_edit = QLineEdit(self.settings.value("selected_wav_path", "", type=str))
+        self.voice_wav_edit.setReadOnly(True)
+        self.voice_wav_button = QPushButton("Choose WAV")
+        self.voice_wav_button.clicked.connect(self.select_voice_wav)
+        self.voice_wav_row = QWidget()
+        voice_wav_layout = QHBoxLayout(self.voice_wav_row)
+        voice_wav_layout.setContentsMargins(0, 0, 0, 0)
+        voice_wav_layout.addWidget(self.voice_wav_edit)
+        voice_wav_layout.addWidget(self.voice_wav_button)
+        self.clone_source_label = QLabel("Clone source:")
+        voice_layout.addRow(self.clone_source_label, self.voice_wav_row)
+
+        self.pocket_voice_selector = QComboBox()
+        self.pocket_voice_selector.addItems(core.POCKET_TTS_VOICES)
+        selected_pocket_voice = self.settings.value("pocket_voice", "alba", type=str)
+        self.pocket_voice_selector.setCurrentText(
+            selected_pocket_voice if selected_pocket_voice in core.POCKET_TTS_VOICES else "alba"
+        )
+        self.pocket_voice_selector.currentTextChanged.connect(self.update_pocket_voice)
+        self.pocket_voice_label = QLabel("PocketTTS voice:")
+        voice_layout.addRow(self.pocket_voice_label, self.pocket_voice_selector)
+
         self.voice_speed_spinbox = QDoubleSpinBox()
         self.voice_speed_spinbox.setRange(1.0, 2.0)
         self.voice_speed_spinbox.setSingleStep(0.1)
@@ -1057,6 +1210,7 @@ class SettingsDialog(QDialog):
         self.voice_speed_spinbox.valueChanged.connect(self.update_voice_speed)
         voice_layout.addRow("Voice Speed:", self.voice_speed_spinbox)
         layout.addWidget(voice_group)
+        self.update_voice_controls()
 
         # Silence Trimming Settings
         trim_group = QGroupBox("Silence Trimming")
@@ -1108,6 +1262,10 @@ class SettingsDialog(QDialog):
 
     def reset_to_defaults(self):
         # Reset all settings to their default values from QSettings
+        self.tts_model_selector.setCurrentText("Chatterbox")
+        self.use_gpu_checkbox.setChecked(True)
+        self.use_cloned_voice_checkbox.setChecked(False)
+        self.pocket_voice_selector.setCurrentText("alba")
         self.repetition_penalty_slider.setValue(int(self.settings.value('repetition_penalty', 1.1, type=float) * 10))
         self.min_p_slider.setValue(int(self.settings.value('min_p', 0.02, type=float) * 100))
         self.top_p_slider.setValue(int(self.settings.value('top_p', 0.95, type=float) * 100))
@@ -1164,6 +1322,44 @@ class SettingsDialog(QDialog):
 
     def update_voice_speed(self, value: float):
         self.settings.setValue("voice_speed", float(value))
+
+    def select_voice_wav(self):
+        wav_path, _ = QFileDialog.getOpenFileName(self, "Select voice WAV", "", "Wave files (*.wav)")
+        if wav_path:
+            self.voice_wav_edit.setText(wav_path)
+            self.settings.setValue("selected_wav_path", wav_path)
+
+    def update_use_cloned_voice(self, state: int):
+        self.settings.setValue("use_cloned_voice", bool(state))
+        self.update_voice_controls()
+
+    def update_pocket_voice(self, voice: str):
+        self.settings.setValue("pocket_voice", voice)
+
+    def update_voice_controls(self):
+        """Show only the voice control applicable to the chosen engine."""
+        model = self.tts_model_selector.currentText()
+        requires_clone = model == "Qwen3 TTS"
+        if requires_clone and not self.use_cloned_voice_checkbox.isChecked():
+            self.use_cloned_voice_checkbox.blockSignals(True)
+            self.use_cloned_voice_checkbox.setChecked(True)
+            self.use_cloned_voice_checkbox.blockSignals(False)
+            self.settings.setValue("use_cloned_voice", True)
+        self.use_cloned_voice_checkbox.setEnabled(not requires_clone)
+        using_clone = self.use_cloned_voice_checkbox.isChecked()
+        self.voice_wav_row.setVisible(using_clone)
+        self.clone_source_label.setVisible(using_clone)
+        show_pocket_voice = model == "PocketTTS" and not using_clone
+        self.pocket_voice_label.setVisible(show_pocket_voice)
+        self.pocket_voice_selector.setVisible(show_pocket_voice)
+        self.pocket_voice_selector.setEnabled(show_pocket_voice)
+
+    def update_tts_model(self, value: str):
+        self.settings.setValue("tts_model", value)
+        self.update_voice_controls()
+
+    def update_use_gpu(self, state: int):
+        self.settings.setValue("use_gpu", bool(state))
 
 class BatchFilesPanel(QWidget):
     def __init__(self, batch_files, parent=None):

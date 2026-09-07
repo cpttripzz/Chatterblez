@@ -5,6 +5,7 @@
 # by Zachary Erskine
 # by Claudio Santini 2025 - https://claudio.uk
 import logging
+import json
 import os
 import sys
 import traceback
@@ -17,6 +18,7 @@ import soundfile
 import numpy as np
 import librosa
 import time
+import tempfile
 import shutil
 import subprocess
 import platform
@@ -48,6 +50,174 @@ def _safe_read_file(self, name):
 
 EpubReader.read_file = _safe_read_file
 sample_rate = 24000
+THERMAL_RECOVERY_TEMP_C = 80
+THERMAL_CHECK_INTERVAL_SECONDS = 5
+TTS_MODELS = ("Chatterbox", "Qwen3 TTS", "PocketTTS")
+POCKET_TTS_VOICES = (
+    "cosette", "marius", "javert", "alba", "jean", "anna", "vera",
+    "fantine", "charles", "paul", "eponine", "azelma", "george", "mary",
+    "jane", "michael", "eve", "bill_boerst", "peter_yearsley", "stuart_bell",
+    "caro_davy", "giovanni", "lola", "juergen", "rafael", "estelle",
+)
+
+
+class TTSEngine:
+    """Small common interface over the supported TTS libraries."""
+
+    sample_rate = sample_rate
+    uses_gpu = False
+    max_batch_chars = 800
+
+    def generate(self, text, **_kwargs):
+        raise NotImplementedError
+
+
+class ChatterboxEngine(TTSEngine):
+    def __init__(self, device, audio_prompt_wav, pocket_voice="alba"):
+        try:
+            from chatterbox.tts import ChatterboxTTS
+        except ImportError as exc:
+            raise RuntimeError("Chatterbox is not installed. Install requirements.txt.") from exc
+        self.model = ChatterboxTTS.from_pretrained(device=device)
+        self.sample_rate = self.model.sr
+        self.uses_gpu = device == "cuda"
+        if audio_prompt_wav:
+            self.model.prepare_conditionals(wav_fpath=audio_prompt_wav)
+
+    def generate(self, text, **kwargs):
+        wav = self.model.generate(text, **kwargs)
+        return wav.detach().cpu().numpy().flatten()
+
+
+class IsolatedTTSEngine(TTSEngine):
+    """A persistent model process in its own virtual environment."""
+
+    environment_name = ""
+    worker_engine = ""
+
+    def __init__(self, device, audio_prompt_wav, pocket_voice="alba"):
+        if self.worker_engine == "qwen3" and not audio_prompt_wav:
+            raise RuntimeError("Qwen3 TTS needs a voice WAV. Select one before starting synthesis.")
+        python_name = "python.exe" if os.name == "nt" else "python"
+        interpreter = Path(__file__).parent / self.environment_name / "Scripts" / python_name
+        if not interpreter.is_file():
+            raise RuntimeError(f"{self.environment_name} is missing. Run the model environment setup first.")
+        self.uses_gpu = device == "cuda"
+        self.process = subprocess.Popen(
+            [str(interpreter), str(Path(__file__).parent / "tts_worker.py"), "--engine", self.worker_engine],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=None,
+            text=True,
+            encoding="utf-8",
+            bufsize=1,
+        )
+        response = self._request({
+            "audio_prompt_wav": audio_prompt_wav,
+            "pocket_voice": pocket_voice,
+            "use_gpu": self.uses_gpu,
+        })
+        if not response["ok"]:
+            self.close()
+            raise RuntimeError(f"Could not start {self.environment_name}: {response['error']}")
+        self.uses_gpu = response.get("uses_gpu", self.uses_gpu)
+
+    def _request(self, payload):
+        if self.process.poll() is not None:
+            raise RuntimeError(f"{self.environment_name} worker exited unexpectedly.")
+        self.process.stdin.write(json.dumps(payload) + "\n")
+        self.process.stdin.flush()
+        response_line = self.process.stdout.readline()
+        if not response_line:
+            raise RuntimeError(f"{self.environment_name} worker stopped without a response.")
+        return json.loads(response_line)
+
+    def generate(self, text, **_kwargs):
+        handle, output_path = tempfile.mkstemp(suffix=".wav", prefix="chatterblez_")
+        os.close(handle)
+        try:
+            response = self._request({"action": "generate", "text": text, "output_path": output_path})
+            if not response["ok"]:
+                raise RuntimeError(f"{self.environment_name} generation failed: {response['error']}")
+            wav, self.sample_rate = soundfile.read(output_path, dtype="float32")
+            return np.asarray(wav, dtype=np.float32).flatten()
+        finally:
+            if os.path.exists(output_path):
+                os.remove(output_path)
+
+    def close(self):
+        if getattr(self, "process", None) and self.process.poll() is None:
+            self.process.terminate()
+
+    def __del__(self):
+        self.close()
+
+
+class Qwen3TTSEngine(IsolatedTTSEngine):
+    environment_name = ".venv-qwen3-tts"
+    worker_engine = "qwen3"
+
+
+class PocketTTSEngine(IsolatedTTSEngine):
+    environment_name = ".venv-pockettts"
+    worker_engine = "pocket"
+    # PocketTTS warns (and may omit words) above 50 text tokens. Its own token
+    # count varies, so keep Chatterblez's batches conservative.
+    max_batch_chars = 90
+
+
+def load_tts_engine(tts_model, device, audio_prompt_wav, pocket_voice="alba"):
+    engines = {
+        "Chatterbox": ChatterboxEngine,
+        "Qwen3 TTS": Qwen3TTSEngine,
+        "PocketTTS": PocketTTSEngine,
+    }
+    try:
+        engine_type = engines[tts_model]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported TTS model: {tts_model!r}") from exc
+    logging.info("Loading TTS model: %s", tts_model)
+    return engine_type(device, audio_prompt_wav, pocket_voice)
+
+
+def _gpu_is_thermally_throttled():
+    """Return ``(is_throttled, temperature_c)`` from NVIDIA's driver."""
+    if not torch.cuda.is_available():
+        return None, None
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=clocks_event_reasons.sw_thermal_slowdown,temperature.gpu",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5, check=True,
+        )
+        status, temperature = result.stdout.strip().splitlines()[0].split(",", maxsplit=1)
+        return status.strip().lower() == "active", int(temperature.strip())
+    except (FileNotFoundError, subprocess.SubprocessError, ValueError, IndexError) as exc:
+        logging.debug("Could not read NVIDIA thermal status: %s", exc)
+        return None, None
+
+
+def wait_for_gpu_thermal_recovery(should_stop, post_event=None):
+    """Pause between audio batches while NVIDIA reports thermal throttling."""
+    throttled, temperature = _gpu_is_thermally_throttled()
+    if not throttled:
+        return bool(should_stop())
+
+    logging.warning("GPU thermal throttling detected at %s°C; pausing until it cools to %s°C.",
+                    temperature, THERMAL_RECOVERY_TEMP_C)
+    if post_event:
+        post_event("CORE_THERMAL_PAUSED", temperature=temperature)
+    while not should_stop():
+        time.sleep(THERMAL_CHECK_INTERVAL_SECONDS)
+        throttled, temperature = _gpu_is_thermally_throttled()
+        # Recovery headroom prevents immediately bouncing into another throttle.
+        if throttled is False and temperature is not None and temperature <= THERMAL_RECOVERY_TEMP_C:
+            logging.info("GPU cooled to %s°C; resuming synthesis.", temperature)
+            if post_event:
+                post_event("CORE_THERMAL_RESUMED", temperature=temperature)
+            return False
+    return True
+
 import perth
 if perth.PerthImplicitWatermarker is None:
     perth.PerthImplicitWatermarker = perth.DummyWatermarker
@@ -394,14 +564,23 @@ def clean_line(line: str) -> str:
     line = space_re.sub(' ', line)                            # Collapse spaces
     return line.strip()
 def main(file_path, pick_manually, speed, book_year='', output_folder='.',
-         max_chapters=None, max_sentences=None, selected_chapters=None, post_event=None, audio_prompt_wav=None, batch_files=None, ignore_list=None, should_stop=None,
+         max_chapters=None, max_sentences=None, selected_chapters=None, post_event=None, audio_prompt_wav=None, pocket_voice="alba", batch_files=None, ignore_list=None, should_stop=None, should_pause=None,
          repetition_penalty=1.1, min_p=0.02, top_p=0.95, exaggeration=0.4, cfg_weight=0.8, temperature=0.85,
+         auto_pause_on_thermal_throttle=True,
+         tts_model="Chatterbox",
+         use_gpu=True,
          enable_silence_trimming=False, silence_thresh=-50, min_silence_len=500, keep_silence=100):
     """
     Main entry point for audiobook synthesis.
     - ignore_list: list of chapter names to ignore (case-insensitive substring match)
     - batch_files: if provided, a list of file paths to process sequentially
     - should_stop: optional callback, returns True if synthesis should be interrupted
+    - should_pause: optional callback that blocks while synthesis is paused and
+      returns True if it was stopped while waiting
+    - auto_pause_on_thermal_throttle: wait between batches for a throttled GPU
+      to cool before beginning the next generation
+    - tts_model: one of ``Chatterbox``, ``Qwen3 TTS``, or ``PocketTTS``
+    - use_gpu: run supported engines on CUDA when available
     """
     logging.basicConfig(
         level=logging.INFO,
@@ -431,10 +610,14 @@ def main(file_path, pick_manually, speed, book_year='', output_folder='.',
         logging.info(f"{key} = {value}")
     if should_stop is None:
         should_stop = lambda: False
+    if should_pause is None:
+        should_pause = lambda: False
 
     if batch_files is not None:
         # Sequentially process each file in batch_files
         for batch_file in batch_files:
+            if should_pause() or should_stop():
+                break
             # Call main for each file, passing ignore_list and other params
             main(
                 file_path=batch_file,
@@ -447,15 +630,20 @@ def main(file_path, pick_manually, speed, book_year='', output_folder='.',
                 selected_chapters=None,
                 post_event=post_event,
                 audio_prompt_wav=audio_prompt_wav,
+                pocket_voice=pocket_voice,
                 batch_files=None,  # Prevent infinite recursion
                 ignore_list=ignore_list,
                 should_stop=should_stop,
+                should_pause=should_pause,
                 repetition_penalty=repetition_penalty,
                 min_p=min_p,
                 top_p=top_p,
                 exaggeration=exaggeration,
                 cfg_weight=cfg_weight,
                 temperature=temperature,
+                auto_pause_on_thermal_throttle=auto_pause_on_thermal_throttle,
+                tts_model=tts_model,
+                use_gpu=use_gpu,
                 enable_silence_trimming=enable_silence_trimming,
                 silence_thresh=silence_thresh,
                 min_silence_len=min_silence_len,
@@ -549,7 +737,7 @@ def main(file_path, pick_manually, speed, book_year='', output_folder='.',
     stats = SimpleNamespace(
         total_chars=sum(map(len, texts)),
         processed_chars=0,
-        chars_per_sec=500 if torch.cuda.is_available() else 50,  # initial guess
+        chars_per_sec=500 if use_gpu and torch.cuda.is_available() else 50,  # initial guess
         start_time=time.perf_counter(),
         eta='–',
         progress=0
@@ -561,24 +749,15 @@ def main(file_path, pick_manually, speed, book_year='', output_folder='.',
     logging.info(f'Estimated time remaining (assuming {stats.chars_per_sec} chars/sec): {eta}')
     chapter_wav_files = []
 
-    import torchaudio as ta
-    from chatterbox.tts import ChatterboxTTS
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cuda" if use_gpu and torch.cuda.is_available() else "cpu"
     logging.info(f'running on device: {device}')
-
-    cb_model = ChatterboxTTS.from_pretrained(device=device)
-
-    # If a custom audio prompt is provided, use it
-    if audio_prompt_wav:
-        AUDIO_PROMPT_PATH = audio_prompt_wav
-        cb_model.prepare_conditionals(wav_fpath=AUDIO_PROMPT_PATH)
-    # You must set AUDIO_PROMPT_PATH to the correct path for your audio prompt
-    # AUDIO_PROMPT_PATH = "audio_prompt.wav"  # <-- Set this to your actual prompt file
-    # cb_model.prepare_conditionals(wav_fpath=AUDIO_PROMPT_PATH)
+    tts_engine = load_tts_engine(tts_model, device, audio_prompt_wav, pocket_voice)
 
     chapter_wav_files = []
     nlp = get_nlp()
     for i, chapter in enumerate(selected_chapters, start=1):
+        if should_pause():
+            break
         if should_stop():
             logging.info("Synthesis interrupted by user (chapter loop).")
             break
@@ -612,7 +791,7 @@ def main(file_path, pick_manually, speed, book_year='', output_folder='.',
         if post_event and hasattr(chapter, "chapter_index"):
             post_event('CORE_CHAPTER_STARTED', chapter_index=chapter.chapter_index)
         audio_segments = gen_audio_segments(
-            cb_model,
+            tts_engine,
             nlp,
             text,
             speed,
@@ -620,18 +799,24 @@ def main(file_path, pick_manually, speed, book_year='', output_folder='.',
             post_event=post_event,
             max_sentences=max_sentences,
             should_stop=should_stop,
+            should_pause=should_pause,
             repetition_penalty=repetition_penalty,
             min_p=min_p,
             top_p=top_p,
             exaggeration=exaggeration,
             cfg_weight=cfg_weight,
-            temperature=temperature
+            temperature=temperature,
+            auto_pause_on_thermal_throttle=auto_pause_on_thermal_throttle and tts_engine.uses_gpu,
         )
         if should_stop():
             logging.info("Synthesis interrupted by user (after audio_segments).")
             break
         if audio_segments:
             final_audio = np.concatenate(audio_segments)
+            if tts_engine.sample_rate != sample_rate:
+                final_audio = librosa.resample(
+                    final_audio, orig_sr=tts_engine.sample_rate, target_sr=sample_rate
+                )
             soundfile.write(chapter_wav_path, final_audio, sample_rate)
 
             if enable_silence_trimming:
@@ -742,16 +927,23 @@ def batch_sentences_intelligently(sentences, min_chars=150, max_chars=800):
         if not sent_text or sent_length < 2:
             continue
 
-        # If this sentence alone exceeds max_chars, add it as its own batch
+        # Split an overlong sentence at word boundaries. Some engines (notably
+        # PocketTTS) have a hard token cap and may silently skip words instead
+        # of truncating a sentence safely.
         if sent_length > max_chars:
-            # First, flush current batch if it exists
             if current_batch:
                 batches.append(' '.join(current_batch))
                 current_batch = []
                 current_length = 0
-
-            # Add the long sentence as its own batch
-            batches.append(sent_text)
+            remaining = sent_text
+            while len(remaining) > max_chars:
+                split_at = remaining.rfind(' ', 0, max_chars + 1)
+                if split_at <= 0:
+                    split_at = max_chars
+                batches.append(remaining[:split_at].strip())
+                remaining = remaining[split_at:].strip()
+            if remaining:
+                batches.append(remaining)
             continue
 
         # If adding this sentence would exceed max_chars, start a new batch
@@ -807,17 +999,20 @@ def print_selected_chapters(document_chapters, chapters):
     ], headers=['#', 'Chapter', 'Text Length', 'Selected', 'First words']))
 
 
-def gen_audio_segments(cb_model, nlp, text, speed, stats=None, max_sentences=None,
-                       post_event=None, should_stop=None, repetition_penalty=1.2, min_p=0.05, top_p=1.0, exaggeration=0.5, cfg_weight=0.5, temperature=0.8):  # Use spacy to split into sentences
+def gen_audio_segments(tts_engine, nlp, text, speed, stats=None, max_sentences=None,
+                       post_event=None, should_stop=None, should_pause=None, repetition_penalty=1.2, min_p=0.05, top_p=1.0, exaggeration=0.5, cfg_weight=0.5, temperature=0.8,
+                       auto_pause_on_thermal_throttle=True):  # Use spacy to split into sentences
 
     if should_stop is None:
         should_stop = lambda: False
+    if should_pause is None:
+        should_pause = lambda: False
 
     audio_segments = []
     doc = nlp(text)
     sentences = list(doc.sents)
-    batch_min_chars=150
-    batch_max_chars=800
+    batch_min_chars = min(150, tts_engine.max_batch_chars)
+    batch_max_chars = tts_engine.max_batch_chars
     num_candidates=3
     # Then batch sentences intelligently
     batches = batch_sentences_intelligently(
@@ -836,8 +1031,13 @@ def gen_audio_segments(cb_model, nlp, text, speed, stats=None, max_sentences=Non
         logging.info(f"  ... and {total_batches - 3} more batches")
 
     for i, batch_text in enumerate(batches):
+        if should_pause():
+            return audio_segments
         if should_stop():
             logging.info("Synthesis interrupted by user (batch loop).")
+            return audio_segments
+        if auto_pause_on_thermal_throttle and wait_for_gpu_thermal_recovery(should_stop, post_event):
+            logging.info("Synthesis interrupted while waiting for GPU thermal recovery.")
             return audio_segments
         if max_sentences and i >= max_sentences:
             break
@@ -847,9 +1047,16 @@ def gen_audio_segments(cb_model, nlp, text, speed, stats=None, max_sentences=Non
             continue
 
 
-        wav = cb_model.generate(batch_text, repetition_penalty=repetition_penalty, min_p=min_p, top_p=top_p,
-                                exaggeration=exaggeration, cfg_weight=cfg_weight, temperature=temperature)
-        audio_segments.append(wav.numpy().flatten())
+        wav = tts_engine.generate(
+            batch_text,
+            repetition_penalty=repetition_penalty,
+            min_p=min_p,
+            top_p=top_p,
+            exaggeration=exaggeration,
+            cfg_weight=cfg_weight,
+            temperature=temperature,
+        )
+        audio_segments.append(wav)
 
         # Update statistics based on batch size
         if stats:

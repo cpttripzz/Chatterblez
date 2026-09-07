@@ -22,6 +22,12 @@ def cli_main():
     parser.add_argument('--wav', help='Path to a WAV file for voice conditioning (audio prompt)')
     parser.add_argument('--speed', type=float, default=1.0, help='Speech speed (default: 1.0)')
     parser.add_argument('--cuda', default=True, help='Use GPU via Cuda in Torch if available', action='store_true')
+    parser.add_argument('--cpu', dest='cuda', action='store_false', help='Force CPU inference')
+    parser.add_argument('--tts-model', choices=('Chatterbox', 'Qwen3 TTS', 'PocketTTS'), default='Chatterbox',
+                        help='TTS engine to use (default: Chatterbox)')
+    parser.add_argument('--no-auto-pause-on-thermal-throttle', dest='auto_pause_on_thermal_throttle', action='store_false',
+                        help='Keep generating when NVIDIA reports thermal throttling')
+    parser.set_defaults(auto_pause_on_thermal_throttle=True)
 
     # Silence trimming parameters
     parser.add_argument('--enable-silence-trimming', action='store_true', help='Enable silence trimming on the generated audio chapters.')
@@ -98,6 +104,9 @@ def cli_main():
             exaggeration=args.exaggeration,
             cfg_weight=args.cfg_weight,
             temperature=args.temperature,
+            auto_pause_on_thermal_throttle=args.auto_pause_on_thermal_throttle,
+            tts_model=args.tts_model,
+            use_gpu=args.cuda,
             enable_silence_trimming=args.enable_silence_trimming,
             silence_thresh=args.silence_thresh,
             min_silence_len=args.min_silence_len,
@@ -125,6 +134,9 @@ def cli_main():
             exaggeration=args.exaggeration,
             cfg_weight=args.cfg_weight,
             temperature=args.temperature,
+            auto_pause_on_thermal_throttle=args.auto_pause_on_thermal_throttle,
+            tts_model=args.tts_model,
+            use_gpu=args.cuda,
             enable_silence_trimming=args.enable_silence_trimming,
             silence_thresh=args.silence_thresh,
             min_silence_len=args.min_silence_len,
