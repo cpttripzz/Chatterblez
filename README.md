@@ -82,7 +82,7 @@ you want the Settings GPU option):
 ```powershell
 .venv\Scripts\python.exe -m venv .venv-qwen3-tts
 .venv-qwen3-tts\Scripts\python.exe -m pip install torch==2.6.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
-.venv-qwen3-tts\Scripts\python.exe -m pip install qwen-tts==0.1.1 soundfile hf-xet
+.venv-qwen3-tts\Scripts\python.exe -m pip install -f req-nochatterbox.txt
 
 .venv\Scripts\python.exe -m venv .venv-pockettts
 .venv-pockettts\Scripts\python.exe -m pip install torch==2.6.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124

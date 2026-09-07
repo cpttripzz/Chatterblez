@@ -14,8 +14,33 @@ import soundfile
 import torch
 
 
+QWEN_MAX_REFERENCE_SECONDS = 30
+
+
 def respond(stream, payload):
     print(json.dumps(payload), file=stream, flush=True)
+
+
+def prepare_qwen_reference(audio_prompt_wav):
+    """Load at most a short voice sample so Qwen cannot encode a whole book."""
+    info = soundfile.info(audio_prompt_wav)
+    max_frames = int(info.samplerate * QWEN_MAX_REFERENCE_SECONDS)
+    frames = min(info.frames, max_frames)
+    audio, sample_rate = soundfile.read(
+        audio_prompt_wav,
+        frames=frames,
+        dtype="float32",
+        always_2d=False,
+    )
+    if audio.ndim > 1:
+        audio = audio.mean(axis=1, dtype=np.float32)
+    if info.frames > max_frames:
+        print(
+            f"Qwen3 TTS: reference audio is {info.duration:.1f}s; "
+            f"using the first {QWEN_MAX_REFERENCE_SECONDS}s to limit memory use.",
+            file=sys.stderr,
+        )
+    return audio, sample_rate
 
 
 def load_qwen(audio_prompt_wav, use_gpu):
@@ -35,11 +60,12 @@ def load_qwen(audio_prompt_wav, use_gpu):
     model = Qwen3TTSModel.from_pretrained(
         "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
         device_map=device,
-        dtype=torch.float16 if device.startswith("cuda") else torch.float32,
+        dtype=torch.bfloat16 if device.startswith("cuda") else torch.float32,
         attn_implementation="eager",
     )
+    reference_audio = prepare_qwen_reference(audio_prompt_wav)
     prompt = model.create_voice_clone_prompt(
-        ref_audio=audio_prompt_wav,
+        ref_audio=reference_audio,
         x_vector_only_mode=True,
     )
 

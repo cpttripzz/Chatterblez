@@ -218,9 +218,7 @@ def wait_for_gpu_thermal_recovery(should_stop, post_event=None):
             return False
     return True
 
-import perth
-if perth.PerthImplicitWatermarker is None:
-    perth.PerthImplicitWatermarker = perth.DummyWatermarker
+
 
 def apply_voice_speed(audio_path: str, speed: float, target_sr: int = sample_rate):
     """
